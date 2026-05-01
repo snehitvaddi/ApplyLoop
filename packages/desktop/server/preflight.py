@@ -310,6 +310,92 @@ def _check_openclaw_cli() -> dict:
     }
 
 
+_CONFIG_CACHE: dict = {"result": None, "expires_at": 0.0}
+
+
+def _check_openclaw_config() -> dict:
+    """6b. ~/.openclaw/openclaw.json exists and contains gateway.port +
+    browser.profiles.openclaw.cdpPort. The gateway can report 'rpc probe: ok'
+    while still being disconnected from Chrome if this file is missing or
+    malformed. This cheap file-system check catches that class of silent
+    failure before any subprocess is run.
+
+    optional: True — not blocking, shown as a warning row in the wizard.
+    Cached: 60s success / 10s failure.
+    """
+    import time as _time
+    import json as _json
+    now = _time.time()
+    if _CONFIG_CACHE["result"] is not None and now < _CONFIG_CACHE["expires_at"]:
+        return _CONFIG_CACHE["result"]
+
+    def _cache(r: dict, ttl: float) -> dict:
+        _CONFIG_CACHE.update(result=r, expires_at=now + ttl)
+        return r
+
+    config_path = Path(os.path.expanduser("~/.openclaw/openclaw.json"))
+    if not config_path.exists():
+        return _cache({
+            "id": "openclaw_config",
+            "ok": False,
+            "optional": True,
+            "label": "OpenClaw config",
+            "detail": f"Config file missing: {config_path}",
+            "remediation": {
+                "type": "install",
+                "target": "openclaw_gateway",
+                "command": "openclaw setup",
+            },
+        }, 10)
+
+    try:
+        data = _json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return _cache({
+            "id": "openclaw_config",
+            "ok": False,
+            "optional": True,
+            "label": "OpenClaw config",
+            "detail": f"Config unreadable: {e}",
+            "remediation": {
+                "type": "install",
+                "target": "openclaw_gateway",
+                "command": "openclaw setup",
+            },
+        }, 10)
+
+    missing: list[str] = []
+    if not (data.get("gateway") or {}).get("port"):
+        missing.append("gateway.port")
+    profiles = (data.get("browser") or {}).get("profiles") or {}
+    if not (profiles.get("openclaw") or {}).get("cdpPort"):
+        missing.append("browser.profiles.openclaw.cdpPort")
+
+    if missing:
+        return _cache({
+            "id": "openclaw_config",
+            "ok": False,
+            "optional": True,
+            "label": "OpenClaw config",
+            "detail": f"Config incomplete — missing: {', '.join(missing)}",
+            "remediation": {
+                "type": "install",
+                "target": "openclaw_gateway",
+                "command": "openclaw setup",
+            },
+        }, 10)
+
+    gport = (data.get("gateway") or {}).get("port")
+    cdp = (profiles.get("openclaw") or {}).get("cdpPort")
+    return _cache({
+        "id": "openclaw_config",
+        "ok": True,
+        "optional": True,
+        "label": "OpenClaw config",
+        "detail": f"gateway port {gport} · cdp port {cdp}",
+    }, 60)
+
+
 # Module-level cache for the gateway check result. Pujith's machine was
 # taking ~3.5s on every /api/setup/status call because the openclaw
 # gateway status subprocess is synchronous and slow. AppShell polls
@@ -421,6 +507,93 @@ def _check_openclaw_gateway() -> dict:
     }, ttl=5)
 
 
+_BROWSER_CACHE: dict = {"result": None, "expires_at": 0.0}
+
+
+def _check_browser_ready() -> dict:
+    """7b. End-to-end browser smoke test: run `openclaw browser snapshot`
+    with an 8s timeout. Non-empty output means Chrome is reachable through
+    the gateway. On failure, attempts a one-shot gateway restart (3s) then
+    retries once.
+
+    optional: True — never blocks ready=True; shown as a warning row.
+    Cached: 60s success / 10s failure.
+    """
+    import time as _time
+    now = _time.time()
+    if _BROWSER_CACHE["result"] is not None and now < _BROWSER_CACHE["expires_at"]:
+        return _BROWSER_CACHE["result"]
+
+    def _cache(r: dict, ttl: float) -> dict:
+        _BROWSER_CACHE.update(result=r, expires_at=now + ttl)
+        return r
+
+    openclaw = _find_binary("openclaw", _OPENCLAW_FALLBACK_PATHS)
+    if not openclaw:
+        return _cache({
+            "id": "browser_ready",
+            "ok": False,
+            "hidden": True,
+            "optional": True,
+            "label": "Browser (OpenClaw)",
+            "detail": "Pending OpenClaw CLI install",
+            "remediation": {"type": "install", "target": "openclaw"},
+        }, 10)
+
+    def _probe() -> bool:
+        try:
+            r = subprocess.run(
+                [openclaw, "browser", "snapshot"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return bool((r.stdout or "").strip())
+        except Exception:
+            return False
+
+    if _probe():
+        return _cache({
+            "id": "browser_ready",
+            "ok": True,
+            "optional": True,
+            "label": "Browser (OpenClaw)",
+            "detail": "Browser reachable",
+        }, 60)
+
+    logger.info("browser_ready: snapshot empty, attempting gateway restart")
+    try:
+        subprocess.run(
+            [openclaw, "gateway", "restart"],
+            capture_output=True, timeout=3,
+        )
+    except Exception as e:
+        logger.warning(f"browser_ready: gateway restart failed: {e}")
+
+    if _probe():
+        return _cache({
+            "id": "browser_ready",
+            "ok": True,
+            "optional": True,
+            "label": "Browser (OpenClaw)",
+            "detail": "Browser reachable (recovered after gateway restart)",
+        }, 60)
+
+    return _cache({
+        "id": "browser_ready",
+        "ok": False,
+        "optional": True,
+        "label": "Browser (OpenClaw)",
+        "detail": (
+            "OpenClaw cannot open the browser — snapshot empty after gateway restart. "
+            "Is Chrome running with the openclaw profile?"
+        ),
+        "remediation": {
+            "type": "install",
+            "target": "openclaw_gateway",
+            "command": "openclaw gateway restart",
+        },
+    }, 10)
+
+
 def _check_git() -> dict:
     """8. `git` on PATH — optional, only affects auto-updates. Never
     blocks ready=True."""
@@ -516,7 +689,9 @@ async def run_preflight() -> dict:
     # the user can install tools in parallel with activation.
     checks.append(_check_claude_cli())
     checks.append(_check_openclaw_cli())
+    checks.append(_check_openclaw_config())
     checks.append(_check_openclaw_gateway())
+    checks.append(_check_browser_ready())
     checks.append(_check_git())
 
     ready = all(c["ok"] for c in checks if not c.get("optional"))
@@ -809,7 +984,19 @@ def _bootstrap_post_check(tool: str) -> bool:
         path = _find_binary("claude", _CLAUDE_FALLBACK_PATHS)
         return bool(path) and _is_real_claude_code(path)
     if tool == "openclaw":
-        return _find_binary("openclaw", _OPENCLAW_FALLBACK_PATHS) is not None
+        found = _find_binary("openclaw", _OPENCLAW_FALLBACK_PATHS)
+        if not found:
+            return False
+        # Best-effort: register and start the launchd gateway so the worker
+        # has a persistent gateway on first use instead of spawning a
+        # transient one. Non-fatal — a failed start is logged, not raised.
+        try:
+            subprocess.run([found, "gateway", "install"], capture_output=True, timeout=15)
+            subprocess.run([found, "gateway", "start"],   capture_output=True, timeout=10)
+            logger.info("bootstrap: openclaw gateway install+start attempted")
+        except Exception as e:
+            logger.warning(f"bootstrap: gateway start failed (non-fatal): {e}")
+        return True
     return False
 
 

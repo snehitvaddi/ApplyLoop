@@ -11,6 +11,7 @@ This ensures:
 from __future__ import annotations
 
 import os
+import re
 import time
 import json
 import logging
@@ -417,8 +418,14 @@ def enqueue_to_local_db(jobs: list[dict]) -> int:
                     except (ValueError, TypeError):
                         pass  # unparseable date = trust the caller, enqueue
                 company = job.get("company", "")
-                job_id = job.get("external_id") or job.get("job_id") or ""
-                dedup_token = f"{company.lower().replace(' ', '-')}|{job_id}" if job_id else f"{company.lower().replace(' ', '-')}|{(job.get('title', '')).lower().replace(' ', '-')}"
+                # Dedup by company + normalized title (not external_id) so that
+                # the same role posted per-location at the same company (Greenhouse
+                # pattern: one external_id per city) only enters the queue once.
+                # Using external_id as dedup caused 4× duplicates for "Senior
+                # Director, Partnerships" at Braze across four location postings.
+                title_norm = re.sub(r'\s+', '-', (job.get("title", "")).lower().strip())
+                company_norm = company.lower().replace(' ', '-')
+                dedup_token = f"{company_norm}|{title_norm}" if title_norm else f"{company_norm}|{job.get('external_id', '')}"
                 try:
                     cur = conn.execute("""
                         INSERT INTO applications (company, role, url, ats, source, location, posted_at, scouted_at, updated_at, status, dedup_token, application_profile_id)

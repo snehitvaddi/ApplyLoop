@@ -1235,8 +1235,10 @@ class PTYSession:
             lines.append("")
 
         if tg_available:
-            lines.append("STEP A — send a Telegram startup announcement now. Use curl:")
-            lines.append(f"  curl -sS 'https://api.telegram.org/bot{tg_bot}/sendMessage' -d 'chat_id={tg_chat}' --data-urlencode 'text=[ApplyLoop] Session started for {first_name}. Targets: {target_titles}. Beginning scout loop now.'")
+            lines.append("STEP A — announce session start via the MCP tool (NOT curl — token can rotate):")
+            lines.append(f"  notify_telegram(kind=\"session_event\", text=\"[ApplyLoop] Session started for {first_name}. Targets: {target_titles}. Beginning scout loop now.\")")
+            lines.append("  If notify_telegram returns an error (401/403), log it loudly to the terminal and")
+            lines.append("  surface it to the user — do NOT retry silently or fall back to curl.")
             lines.append("")
         else:
             lines.append("(Telegram bot not configured for this account — skip the Telegram step.)")
@@ -1247,7 +1249,10 @@ class PTYSession:
         lines.append("  1. Call scout_list_sources to see available sources.")
         lines.append("  2. Call scout_run_source for each source to collect raw jobs.")
         lines.append("  3. Call tenant_load to get filters (target_titles, preferred_locations, daily_limit).")
-        lines.append("  4. Enqueue filtered jobs via queue_update_status(status=pending).")
+        lines.append("  4. Filter scouted jobs: tenant_filter_jobs → queue_check_dedup → queue_enqueue_jobs(jobs_json=[...]).")
+        lines.append("     DO NOT use queue_update_status to enqueue — it only transitions existing local rows.")
+        lines.append("     DO NOT try to promote cloud-only 'discovered' rows from queue_get_pipeline —")
+        lines.append("     they are not actionable by this worker. Re-scout fresh data instead.")
         lines.append("  5. Call queue_claim_next → apply one job → browser_navigate/snapshot/fill/click.")
         lines.append("  6. Confirm success (look for 'thank you' / 'application received' in snapshot).")
         lines.append("  7. Call browser_screenshot → queue_log_application → notify_telegram.")
@@ -1463,6 +1468,22 @@ class PTYSession:
             logger.info("Profile complete — Claude will auto-start scout loop + fire Telegram announce.")
 
         env = {**os.environ}
+        # Overlay with the current .env file so session-updated credentials
+        # (GMAIL_APP_PASSWORD, Telegram tokens, etc.) are always fresh,
+        # regardless of when the launcher last sourced the file. This is the
+        # single-source-of-truth guarantee: edit .env → next session picks it up.
+        _env_file = os.path.join(applyloop_home, ".env")
+        if os.path.isfile(_env_file):
+            try:
+                with open(_env_file, encoding="utf-8") as _ef:
+                    for _line in _ef:
+                        _line = _line.strip()
+                        if not _line or _line.startswith("#") or "=" not in _line:
+                            continue
+                        _k, _v = _line.split("=", 1)
+                        env[_k.strip()] = _v.strip().strip('"').strip("'")
+            except Exception as _e:
+                logger.warning(f"PTY env overlay from .env failed (non-fatal): {_e}")
         token = load_token()
         if token:
             env["AUTOAPPLY_TOKEN"] = token

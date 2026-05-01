@@ -51,20 +51,18 @@ folder.aliases.drafts = "[Gmail]/Drafts"
 folder.aliases.trash = "[Gmail]/Trash"
 """
 
-# In-memory cache: last (email, app_password) we wrote config for.
-_configured_for: tuple[str, str] = ("", "")
-
-
 def ensure_configured(email: str, app_password: str) -> bool:
     """Write himalaya config.toml from profile creds.
 
-    Idempotent — only rewrites the file when email/password changed.
+    Always checks the on-disk config content against the supplied credentials
+    and rewrites if they differ — no in-memory caching. This guarantees that
+    a password updated in ~/.applyloop/.env is picked up on the very next call
+    without requiring an MCP server restart.
+
     Returns True if the himalaya binary is on PATH and config is in place.
     Returns False (with a logged warning) when himalaya is not installed
     or credentials are missing — callers should skip the email step.
     """
-    global _configured_for
-
     if not email or not app_password:
         logger.warning("himalaya_reader: email or app_password is empty — skipping config write")
         return False
@@ -76,19 +74,25 @@ def ensure_configured(email: str, app_password: str) -> bool:
         logger.warning("himalaya binary not found — install via: brew install himalaya")
         return False
 
-    if _configured_for == (email, app_password):
-        return True  # already written this session
-
     cfg_dir = _config_path()
     cfg_file = os.path.join(cfg_dir, "config.toml")
+    expected = _TOML_TEMPLATE.format(email=email, app_password=app_password)
+
+    # Skip the write only when the file already contains the exact expected content.
+    if os.path.isfile(cfg_file):
+        try:
+            existing = open(cfg_file, encoding="utf-8").read()
+            if existing == expected:
+                return True
+        except Exception:
+            pass  # unreadable → fall through to rewrite
+
     try:
         os.makedirs(cfg_dir, exist_ok=True)
-        content = _TOML_TEMPLATE.format(email=email, app_password=app_password)
         with open(cfg_file, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write(expected)
         os.chmod(cfg_file, 0o600)
-        _configured_for = (email, app_password)
-        logger.info(f"himalaya config written for {email}")
+        logger.info(f"himalaya config written/updated for {email}")
         return True
     except Exception as e:
         logger.warning(f"himalaya config write failed: {e}")

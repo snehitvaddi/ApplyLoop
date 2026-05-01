@@ -283,6 +283,21 @@ class TelegramGateway:
         self.admin_chat_id = chat_id
         self.offset = _load_offset()
         self._stop = False
+
+        # On first start (no saved offset) fast-forward to the most recent
+        # update_id so historic messages are not replayed as new commands.
+        # Without this, a fresh install or deleted offset file causes the
+        # bot to re-process every message ever sent — classic "loop" symptom.
+        if self.offset == 0:
+            try:
+                catchup = await self.client.get_updates(0, timeout=0)
+                if catchup:
+                    self.offset = max(int(u.get("update_id", 0)) for u in catchup)
+                    _save_offset(self.offset)
+                    logger.info(f"Telegram gateway: fast-forwarded to offset {self.offset} (skipped {len(catchup)} historic messages)")
+            except Exception as e:
+                logger.debug(f"Telegram fast-forward failed (non-fatal): {e}")
+
         self._task = asyncio.create_task(self._poll_loop(), name="telegram-gateway")
         logger.info(f"Telegram gateway started (admin chat {chat_id}, offset {self.offset})")
 

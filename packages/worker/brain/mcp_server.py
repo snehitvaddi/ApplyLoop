@@ -75,7 +75,10 @@ def browser_wait_load(timeout_ms: int = 5000) -> str:
 
 @mcp.tool()
 def browser_snapshot() -> str:
-    """Take an accessibility snapshot of the current page. Returns parsed fields as JSON."""
+    """Take an accessibility snapshot of the current page. Returns parsed fields as JSON.
+    Auto-dismisses stray tabs first so hijacking popups (LinkedIn trackers, reCAPTCHA
+    webworkers) don't capture the snapshot."""
+    _browser.dismiss_stray_tabs()
     raw = _browser.snapshot()
     fields = _browser.parse_snapshot(raw) if raw else []
     return json.dumps({"raw": raw, "fields": fields, "field_count": len(fields)}, default=str)
@@ -158,6 +161,15 @@ def browser_dismiss_stray_tabs(keep_url_substring: str = "") -> str:
     keep = keep_url_substring or None
     closed = _browser.dismiss_stray_tabs(keep)
     return json.dumps({"closed": closed}, default=str)
+
+
+@mcp.tool()
+def browser_health_check() -> str:
+    """Check end-to-end browser reachability. Returns JSON {ok, detail}.
+    Attempts a gateway restart + retry if the first snapshot probe fails.
+    Call before claiming a job to confirm the browser pipeline is live."""
+    ok, detail = _browser.health_check()
+    return json.dumps({"ok": ok, "detail": detail})
 
 
 # ── queue ─────────────────────────────────────────────────────────────────
@@ -422,20 +434,55 @@ def notify_telegram(
     kind: str = "generic", company: str = "", title: str = "",
     error: str = "", screenshot_url: str = "", text: str = "",
 ) -> str:
-    """Send a Telegram update. kind in {application_result, failure, scout_summary, session_event, generic}."""
+    """Send a Telegram update. kind in {application_result, failure, scout_summary, session_event, generic}.
+    Returns 'ok' on success or 'error: <detail>' on HTTP failure (401/403/timeout).
+    The caller MUST surface an error response to the user — do NOT retry silently."""
+    import httpx as _httpx
     from notifier import send_session_event, send_failure, send_application_result
     user_id = os.environ.get("APPLYLOOP_USER_ID", "")
-    if kind == "application_result":
-        job = {"company": company, "title": title}
-        send_application_result(user_id, job, screenshot_url or None, profile_name=None)
-    elif kind == "failure":
-        send_failure(user_id, company, title, error, screenshot_url or None)
-    else:
-        send_session_event(user_id, kind, text)
-    return "ok"
+    try:
+        if kind == "application_result":
+            job = {"company": company, "title": title}
+            send_application_result(user_id, job, screenshot_url or None, profile_name=None)
+        elif kind == "failure":
+            send_failure(user_id, company, title, error, screenshot_url or None)
+        else:
+            send_session_event(user_id, kind, text)
+        return "ok"
+    except _httpx.HTTPStatusError as e:
+        msg = f"Telegram HTTP {e.response.status_code}: {e.response.text[:200]}"
+        logging.getLogger(__name__).error(msg)
+        return f"error: {msg}"
+    except Exception as e:
+        msg = str(e)[:300]
+        logging.getLogger(__name__).error(f"notify_telegram failed: {msg}")
+        return f"error: {msg}"
 
 
 # ── email (OTP + link reading via Himalaya CLI) ───────────────────────────
+
+def _get_gmail_creds() -> tuple[str, str]:
+    """Return (email, app_password) — always reads from .env file directly so
+    that session-updated passwords are picked up without an MCP restart.
+    Falls back to os.environ if the .env file is missing or the key is absent."""
+    applyloop_home = os.environ.get("APPLYLOOP_HOME", os.path.expanduser("~/.applyloop"))
+    env_file = os.path.join(applyloop_home, ".env")
+    pairs: dict[str, str] = {}
+    if os.path.isfile(env_file):
+        try:
+            with open(env_file, encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line or _line.startswith("#") or "=" not in _line:
+                        continue
+                    _k, _v = _line.split("=", 1)
+                    pairs[_k.strip()] = _v.strip().strip('"').strip("'")
+        except Exception:
+            pass
+    email = pairs.get("GMAIL_EMAIL") or os.environ.get("GMAIL_EMAIL", "")
+    app_pw = pairs.get("GMAIL_APP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD", "")
+    return email, app_pw
+
 
 @mcp.tool()
 def email_read_otp(
@@ -451,10 +498,9 @@ def email_read_otp(
     Returns the code string, or 'error: ...' on failure.
     """
     from himalaya_reader import ensure_configured, find_otp
-    email = os.environ.get("GMAIL_EMAIL", "")
-    app_pw = os.environ.get("GMAIL_APP_PASSWORD", "")
+    email, app_pw = _get_gmail_creds()
     if not email or not app_pw:
-        return "error: GMAIL_EMAIL or GMAIL_APP_PASSWORD not set in environment"
+        return "error: GMAIL_EMAIL or GMAIL_APP_PASSWORD not set in ~/.applyloop/.env"
     if not ensure_configured(email, app_pw):
         return "error: himalaya not installed or config write failed — run: brew install himalaya"
     code = find_otp(sender_pattern, subject_pattern, timeout=timeout)
@@ -475,10 +521,9 @@ def email_read_link(
     Returns the URL string, or 'error: ...' on failure.
     """
     from himalaya_reader import ensure_configured, find_link
-    email = os.environ.get("GMAIL_EMAIL", "")
-    app_pw = os.environ.get("GMAIL_APP_PASSWORD", "")
+    email, app_pw = _get_gmail_creds()
     if not email or not app_pw:
-        return "error: GMAIL_EMAIL or GMAIL_APP_PASSWORD not set in environment"
+        return "error: GMAIL_EMAIL or GMAIL_APP_PASSWORD not set in ~/.applyloop/.env"
     if not ensure_configured(email, app_pw):
         return "error: himalaya not installed or config write failed — run: brew install himalaya"
     link = find_link(sender_pattern, link_regex, timeout=timeout)

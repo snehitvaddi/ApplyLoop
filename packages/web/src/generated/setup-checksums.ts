@@ -7,9 +7,9 @@ export interface SetupChecksum {
 }
 
 export const SETUP_CHECKSUMS: Record<"mac" | "windowsPs1" | "windowsBat", SetupChecksum> = {
-  mac: { path: "public/setup/ApplyLoop-Setup-Mac.sh", sha256: "1be85a268ce69b92bb2e8a31113242501875291301058eb1a96d36dcb1e6286b" },
-  windowsPs1: { path: "public/setup/ApplyLoop-Setup-Windows.ps1", sha256: "e612c1f0f75104c72661f51178e0d9a667d90d078b34d9e29ad1c28004dca829" },
-  windowsBat: { path: "public/setup/ApplyLoop.bat", sha256: "21fa2c3dffb50f0eae95dcd7c9610489f2b03a74da3f416225dd27b3b0279ad5" },
+  mac: { path: "public/setup/ApplyLoop-Setup-Mac.sh", sha256: "80f67b64b774e980889ebf1c7e70361ffa5eb7a04f974f5fecfedd5dc2f42e7f" },
+  windowsPs1: { path: "public/setup/ApplyLoop-Setup-Windows.ps1", sha256: "4f57eae613e6752e64508ab849ea66a9c822b190475c742ac53df982cf612d0a" },
+  windowsBat: { path: "public/setup/ApplyLoop.bat", sha256: "f53dcfa64e245a1307529eb85edbb02b67207bf2c37b554af7f85d6f4822e79a" },
 };
 
-export const SETUP_CHECKSUMS_GENERATED_AT = "2026-04-11T01:00:11.711Z";
+export const SETUP_CHECKSUMS_GENERATED_AT = "2026-04-25T22:02:41.557Z";

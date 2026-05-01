@@ -13,7 +13,7 @@ tools, not autonomous processes.
 | Task | How |
 |---|---|
 | Scout jobs (7 sources: Ashby / Greenhouse / Lever / Indeed / Himalayas / LinkedIn scroll / LinkedIn public) | `scout_list_sources` → `scout_run_source(name)` for each |
-| Filter + enqueue | `tenant_load` → apply role/location/blocklist/dedup → `queue_update_status` per job |
+| Filter + enqueue | `tenant_load` → `tenant_filter_jobs` → `queue_check_dedup` → `queue_enqueue_jobs(jobs_json=...)` |
 | Apply on any ATS | `queue_claim_next` → `knowledge_get_ats_playbook` → browser_navigate/snapshot/fill/click |
 | Confirm + screenshot | snapshot for "thank you" / "application received" → `browser_screenshot` → local PNG |
 | Log + notify | `queue_log_application` → `queue_update_status(submitted)` → `notify_telegram(screenshot_path=local_path)` |
@@ -40,7 +40,7 @@ recommended next action. You never need to reason from scratch after an idle per
 6. **2-minute timeout per job — but TRY 3 TIMES before giving up.** If you hit an error, unexpected redirect, or blank page: snapshot again, re-read the form, retry from the top of STEP 4. Only after 3 genuine attempts with different approaches (re-navigate, refresh, re-snapshot) can you mark it failed. Premature skip = invisible lost application.
 7. **NEVER assume failure mid-form.** An error message on one step does not mean the application is dead. Scroll, re-snapshot, look for alternative paths (login, email verification, next-page button). The only valid exit is: CAPTCHA with no bypass, hard login wall you cannot create an account for, or form explicitly says "applications closed."
 8. **Max 3 per company per rolling 7 days.** Hard cap. Re-check BEFORE filling each form (just-in-time). Picks the top 3 roles by fit; spread across companies instead of piling on one.
-9. **24-hour freshness only.** Never apply to jobs older than 24 hours. Verify AFTER API fetch. Prune queue rows older than 24h at the start of each apply loop iteration.
+9. **Freshness rule.** ATS-sourced jobs (Greenhouse, Ashby, Lever) expire from the local queue after **7 days** — their boards only list currently-open roles, so any listing is live. Aggregator-sourced jobs (LinkedIn, Indeed, Himalayas) expire after **24 hours** — aggregators carry stale noise. The `enqueue_to_local_db` function enforces the 24h rule at queue time; the 7d relaxation applies to ATS rows only. Prune queue rows older than their respective TTL at the start of each apply iteration. Never apply to a row whose `queued_at` is past its TTL.
 10. **Text fields BEFORE dropdowns.** Dropdown interactions shift refs. Always fill text first.
 11. **Greenhouse: set country dropdown to "United States" BEFORE phone field.**
 12. **Never use web search for scouting.** Use MCP scout tools directly.
@@ -91,7 +91,7 @@ SCOUT → FILTER → READ JD → FILL → VERIFY → SUBMIT → SCREENSHOT → T
 
 ### STEP 1: SCOUT (every 30 min)
 **HIGH (always):** Ashby API, Greenhouse API
-**MEDIUM (80%):** Indeed, Himalayas, LinkedIn, ZipRecruiter
+**MEDIUM (80%):** Himalayas, LinkedIn, ZipRecruiter
 **LOW (40%):** JSearch
 
 Board slugs and API URLs → see `packages/worker/config.py`

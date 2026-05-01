@@ -63,6 +63,38 @@ def browser(cmd: str, timeout: int = 15) -> str:
         return ""
 
 
+def health_check() -> tuple[bool, str]:
+    """End-to-end browser reachability check with auto-recovery.
+
+    Runs `openclaw browser snapshot` (5s). Non-empty output → reachable.
+    On empty, attempts `openclaw gateway restart`, waits 2s, then retries.
+    Returns (ok, detail) — never raises.
+    """
+    def _probe() -> bool:
+        return bool(browser("snapshot", timeout=5))
+
+    if _probe():
+        return True, "Browser reachable"
+
+    logger.info("health_check: snapshot empty, attempting gateway restart")
+    try:
+        subprocess.run(
+            "openclaw gateway restart",
+            shell=True, capture_output=True, timeout=10,
+        )
+        time.sleep(2)
+    except Exception as e:
+        logger.warning(f"health_check: gateway restart failed: {e}")
+
+    if _probe():
+        return True, "Browser reachable (recovered after gateway restart)"
+
+    return False, (
+        "openclaw browser snapshot returned empty after gateway restart — "
+        "Chrome may not be running or the gateway is misconfigured"
+    )
+
+
 def _browser_strict(cmd: str, timeout: int = 15) -> str:
     """Run openclaw and raise BrowserError on timeout / non-zero exit.
 

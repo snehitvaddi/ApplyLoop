@@ -19,7 +19,6 @@ from .base import ScoutSource, JobPost
 from .ashby import AshbyScout
 from .greenhouse import GreenhouseScout
 from .lever import LeverScout
-from .indeed import IndeedScout
 from .himalayas import HimalayasScout
 from .linkedin_scroll import LinkedInScrollScout
 
@@ -29,7 +28,8 @@ REGISTERED_SOURCES: list[ScoutSource] = [
     AshbyScout(),
     GreenhouseScout(),
     LeverScout(),
-    IndeedScout(),
+    # IndeedScout removed — hits a bot wall on every request, hangs OpenClaw,
+    # and blocks the apply loop. Re-enable per-tenant via CLIENT.md if needed.
     HimalayasScout(),
     LinkedInScrollScout(),
 ]
