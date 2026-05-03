@@ -757,23 +757,7 @@ export async function POST(request: NextRequest) {
           }
           enqueued++;
         }
-        // Typed summary so callers can't misread `dropped` as
-        // "submitted". Buckets are derived from the drop reason
-        // strings emitted above; keep the keys in sync if you add a
-        // new drop branch.
-        const reasonStarts = (prefix: string) =>
-          drops.filter((d) => String(d.reason || "").startsWith(prefix)).length;
-        const summary = {
-          input_total: jobs.length,
-          enqueued,
-          dropped_total: drops.length,
-          dedup_already_submitted: reasonStarts("dedup: already submitted"),
-          dedup_already_queued: reasonStarts("dedup: already queued"),
-          missing_fields: reasonStarts("missing_fields"),
-          upsert_failed: reasonStarts("upsert_failed"),
-          queue_insert_failed: reasonStarts("queue_insert_failed"),
-        };
-        return apiSuccess({ enqueued, dropped: drops.length, drops, summary });
+        return apiSuccess({ enqueued, dropped: drops.length, drops });
       }
 
       case "get_answer_key": {
