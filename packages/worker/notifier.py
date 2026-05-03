@@ -32,7 +32,6 @@ def send_application_result(
     job: dict,
     screenshot_path: str | None,
     profile_name: str | None = None,
-    screenshot_url: str | None = None,
 ):
     """Send a photo + caption to the user's Telegram after a successful
     application. `profile_name` is the name of the multi-profile bundle
@@ -57,40 +56,19 @@ def send_application_result(
         f"*Posted:* {posted}"
     )
 
-    # Prefer the cloud URL when available — Telegram fetches it
-    # itself, so the photo arrives even if the worker ran on a
-    # different machine than the user's desktop. Local file is the
-    # fallback for when the upload to the screenshots bucket failed.
     try:
-        if screenshot_url:
-            try:
+        if screenshot_path:
+            with open(screenshot_path, "rb") as photo:
                 _telegram_api(
                     "sendPhoto",
-                    data={
-                        "chat_id": chat_id,
-                        "parse_mode": "Markdown",
-                        "caption": caption,
-                        "photo": screenshot_url,
-                    },
+                    data={"chat_id": chat_id, "parse_mode": "Markdown", "caption": caption},
+                    files={"photo": ("screenshot.png", photo, "image/png")},
                 )
-                return
-            except Exception as e:
-                logger.warning(f"sendPhoto by URL failed, falling back to local file: {e}")
-        if screenshot_path:
-            try:
-                with open(screenshot_path, "rb") as photo:
-                    _telegram_api(
-                        "sendPhoto",
-                        data={"chat_id": chat_id, "parse_mode": "Markdown", "caption": caption},
-                        files={"photo": ("screenshot.png", photo, "image/png")},
-                    )
-                return
-            except Exception as e:
-                logger.warning(f"sendPhoto by file failed, falling back to text: {e}")
-        _telegram_api(
-            "sendMessage",
-            data={"chat_id": chat_id, "parse_mode": "Markdown", "text": caption},
-        )
+        else:
+            _telegram_api(
+                "sendMessage",
+                data={"chat_id": chat_id, "parse_mode": "Markdown", "text": caption},
+            )
     except Exception as e:
         logger.error(f"Failed to send Telegram notification for user {user_id}: {e}")
 
@@ -101,7 +79,6 @@ def send_failure(
     role: str,
     error: str | None,
     screenshot_path: str | None = None,
-    screenshot_url: str | None = None,
 ):
     """Send a failure notification to the user's Telegram. If a screenshot
     path is given, attach the image (parity with send_application_result).
@@ -118,20 +95,6 @@ def send_failure(
     )
 
     try:
-        if screenshot_url:
-            try:
-                _telegram_api(
-                    "sendPhoto",
-                    data={
-                        "chat_id": chat_id,
-                        "parse_mode": "Markdown",
-                        "caption": text,
-                        "photo": screenshot_url,
-                    },
-                )
-                return
-            except Exception as e:
-                logger.debug(f"Failed to send failure photo by URL, trying file: {e}")
         if screenshot_path:
             try:
                 with open(screenshot_path, "rb") as photo:
