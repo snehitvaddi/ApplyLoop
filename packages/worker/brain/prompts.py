@@ -13,6 +13,28 @@ from typing import Optional
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
 PLAYBOOK_PATH = KNOWLEDGE_DIR / "ats-playbook.md"
+OPERATING_MANUAL_PATH = Path(__file__).resolve().parent / "operating-manual.md"
+
+
+def load_operating_manual() -> Optional[str]:
+    """Return the brain's operating manual.
+
+    The manual is the brain's mission spec — captures the full
+    SCOUT → FILTER → ENQUEUE → APPLY → CONFIRM → LOG → TELEGRAM
+    cycle, the OUTCOMES table for worker_apply_one_job, the apply
+    discipline (field order, browser hygiene, recovery), and the
+    hard rules (no resubmit, positive-confirmation only, etc.).
+
+    PTY appends it to the system prompt at session start. The brain
+    can also re-read mid-session via the `brain_get_operating_manual`
+    MCP tool when memory feels stale.
+    """
+    if not OPERATING_MANUAL_PATH.exists():
+        return None
+    try:
+        return OPERATING_MANUAL_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 SYSTEM_PROMPT = """You are the ApplyLoop Brain — a persistent agent that scouts and applies to jobs on behalf of one user.

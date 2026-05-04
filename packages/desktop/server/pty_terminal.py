@@ -1155,6 +1155,30 @@ class PTYSession:
         lines.append("Playbook: ./packages/worker/SOUL.md.")
         lines.append("")
 
+        # Inject the brain's operating manual — the canonical mission
+        # spec (CEO loop, OUTCOMES table, apply discipline, browser
+        # hygiene, recovery rules). Single source of truth for "how
+        # the brain runs." If the file is missing for some reason
+        # (manual not deployed yet), skip silently — the prompt above
+        # still has enough framing to function.
+        try:
+            from pathlib import Path as _Path
+            _manual_path = _Path(cwd) / "packages" / "worker" / "brain" / "operating-manual.md"
+            if _manual_path.is_file():
+                _manual = _manual_path.read_text(encoding="utf-8")
+                lines.append("=" * 72)
+                lines.append("OPERATING MANUAL — read carefully, follow exactly:")
+                lines.append("=" * 72)
+                lines.append(_manual)
+                lines.append("=" * 72)
+                lines.append(
+                    "(End of operating manual. Re-read mid-session via "
+                    "the brain_get_operating_manual MCP tool when uncertain.)"
+                )
+                lines.append("")
+        except Exception as _e:
+            logger.debug(f"Operating manual inject skipped: {_e}")
+
         # If the profile is stub-only AND the user's resume PDF is sitting
         # locally, the fastest path is: use your own Read tool to parse the
         # PDF, extract multi-entry work_experience/skills/education, and

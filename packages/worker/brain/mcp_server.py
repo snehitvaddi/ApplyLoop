@@ -49,7 +49,7 @@ if _HERE not in sys.path:
 from mcp.server.fastmcp import FastMCP
 from applier import browser as _browser
 from brain import session_log
-from brain.prompts import load_ats_playbook
+from brain.prompts import load_ats_playbook, load_operating_manual
 
 logger = logging.getLogger(__name__)
 
@@ -954,6 +954,19 @@ def scout_search_google(query: str, max_results: int = 10) -> str:
         if len(results) >= max_results:
             break
     return json.dumps({"query": q, "count": len(results), "results": results})
+
+
+@mcp.tool()
+def brain_get_operating_manual() -> str:
+    """Return the brain's full operating manual — the mission spec
+    (CEO loop, OUTCOMES table, apply discipline, browser hygiene,
+    recovery rules). Already injected by PTY at session start; re-read
+    here mid-session when uncertain about the loop.
+
+    Returns: {found: bool, manual: str}.
+    """
+    manual = load_operating_manual()
+    return json.dumps({"found": manual is not None, "manual": manual or ""}, default=str)
 
 
 @mcp.tool()

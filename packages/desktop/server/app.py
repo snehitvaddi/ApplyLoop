@@ -197,16 +197,19 @@ async def lifespan(app: FastAPI):
             logger.warning(f"PTY auto-start failed: {e}")
 
     # ── Worker daemon auto-start ───────────────────────────────────
-    # User wants autonomous filling at the end of the day. With the
-    # legacy LaunchAgent unloaded (and us controlling gateway lifecycle
-    # above), nothing else starts the worker. Bring it up here when
-    # preflight is ready so launching the desktop = the bot starts
-    # working. Skipped under APPLYLOOP_HEADLESS or APPLYLOOP_NO_AUTO_WORKER
-    # for the rare cases (CI, debugging) where a daemon would be in
-    # the way.
+    # Three modes via APPLYLOOP_MODE env:
+    #   daemon  — worker.py runs the loop deterministically (legacy)
+    #   brain   — PTY brain runs the loop; daemon is NOT spawned
+    #   hybrid  — (default) daemon does covered ATSes, brain handles
+    #             handoffs + novel ATSes; both run, share queue
+    # In brain mode, the brain is the SOLE driver; spawning the
+    # daemon would create a race for queue claims. Skip it.
+    # APPLYLOOP_NO_AUTO_WORKER kept as legacy alias for opting out.
+    _mode = (_os.environ.get("APPLYLOOP_MODE", "hybrid") or "hybrid").lower().strip()
     if (
         not _os.environ.get("APPLYLOOP_HEADLESS")
         and not _os.environ.get("APPLYLOOP_NO_AUTO_WORKER")
+        and _mode != "brain"
     ):
         try:
             if worker.is_running:
@@ -229,6 +232,11 @@ async def lifespan(app: FastAPI):
                     logger.info("Setup not ready — skipping worker auto-start")
         except Exception as e:
             logger.warning(f"Worker auto-start raised: {e}")
+    elif _mode == "brain":
+        logger.info(
+            "APPLYLOOP_MODE=brain — worker daemon NOT auto-started. "
+            "PTY brain is the sole driver; it'll apply via worker_apply_one_job."
+        )
 
     # Background profile sync: every N seconds, re-pull profile.json from
     # /api/settings/cli-config so edits made on applyloop.vercel.app propagate

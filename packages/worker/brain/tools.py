@@ -22,7 +22,7 @@ from claude_agent_sdk import tool, create_sdk_mcp_server
 
 from applier import browser as _browser
 from brain import session_log
-from brain.prompts import load_ats_playbook
+from brain.prompts import load_ats_playbook, load_operating_manual
 
 logger = logging.getLogger(__name__)
 
@@ -801,6 +801,22 @@ async def queue_claim_brain_fallback(args: dict[str, Any]) -> dict:
 
 
 @tool(
+    "brain_get_operating_manual",
+    "Return the brain's full operating manual — your mission spec. The "
+    "PTY already injects it as the system prompt at session start, so "
+    "you have it. Re-read it MID-SESSION via this tool when you feel "
+    "uncertain about the loop / outcomes / browser hygiene / recovery "
+    "rules. Cheap (one file read), no side effects.",
+    {},
+)
+async def brain_get_operating_manual(args: dict[str, Any]) -> dict:
+    def _do():
+        manual = load_operating_manual()
+        return {"found": manual is not None, "manual": manual or ""}
+    return _log_and_run("brain_get_operating_manual", {}, _do)
+
+
+@tool(
     "knowledge_get_ats_playbook",
     "Return the operator playbook section for one ATS. Names: greenhouse, lever, ashby, smartrecruiters, workday, linkedin, universal.",
     {"name": str},
@@ -841,6 +857,7 @@ ALL_TOOLS = [
     worker_apply_one_job, worker_run_scout_cycle,
     # knowledge
     knowledge_get_ats_playbook, knowledge_record_pattern,
+    brain_get_operating_manual,
     # brain fallback
     queue_claim_brain_fallback,
 ]
