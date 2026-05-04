@@ -624,6 +624,66 @@ def _worker_api(method: str, path: str) -> dict:
 
 
 @mcp.tool()
+def worker_apply_one_job(job_id: str = "", enable_brain_fallback: bool = True) -> str:
+    """Brain-as-conductor: run preflight + apply for ONE job
+    synchronously and return a structured outcome.
+
+    This is the recommended path for new applies. Brain calls this in
+    a loop, decides what to do based on the outcome's `status` field.
+    No worker.py daemon required.
+
+    Outcome shapes (all return JSON):
+      - submitted: recipe applied successfully; screenshot_url set
+      - handoff: recipe missing OR failed non-retriably. The queue row
+        is marked `awaiting_brain` AND the browser is on the failed
+        page — brain can drive manually right now (preferred — same
+        session, same tab, no state loss) OR pick it up later via
+        queue_claim_brain_fallback. handoff_reason is 'no_recipe' or
+        'recipe_failed'.
+      - skipped: preflight rejected (blocked URL/company, daily cap,
+        rate-limited, retriable). Move to next job.
+      - empty: queue had nothing to claim
+      - profile_gap: user setup incomplete (missing resume / profile
+        fields / target_titles). Surface to user via Telegram.
+      - auth_expired: worker token revoked. User must reauth.
+      - error: unexpected exception with `error` set
+
+    job_id: optional. If provided, applies that specific row (must be
+        in 'queued' status). If omitted, claims the oldest queued.
+    enable_brain_fallback: when a recipe fails non-retriably, mark the
+        row awaiting_brain instead of failed. Default True.
+    """
+    from single_apply import apply_one_job
+    return json.dumps(
+        apply_one_job(job_id=job_id or None, enable_brain_fallback=enable_brain_fallback),
+        default=str,
+    )
+
+
+@mcp.tool()
+def worker_run_scout_cycle() -> str:
+    """Run one scout → enqueue cycle synchronously. Honors any active
+    scout_set_plan. Returns {enqueued: int}.
+
+    Brain-as-conductor companion to worker_apply_one_job: same idea,
+    but for scout. Call this when brain decides it's time to refresh
+    the queue (e.g., low pending-count, new keywords, etc.) instead
+    of relying on the daemon's timed scout loop.
+    """
+    from tenant import TenantConfig
+    from worker import run_scout_cycle
+    user_id = os.environ.get("APPLYLOOP_USER_ID", "").strip()
+    if not user_id:
+        return json.dumps({"error": "APPLYLOOP_USER_ID not set"})
+    try:
+        tenant = TenantConfig.load(user_id)
+    except Exception as e:
+        return json.dumps({"error": f"tenant load failed: {e}"})
+    enqueued = run_scout_cycle(tenant)
+    return json.dumps({"enqueued": int(enqueued or 0)})
+
+
+@mcp.tool()
 def worker_status() -> str:
     """Report the python worker.py loop state: {running, pid, uptime,
     restart_count}. Call BEFORE hand-driving an apply — if running=true,

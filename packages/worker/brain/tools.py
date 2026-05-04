@@ -699,6 +699,45 @@ async def knowledge_record_pattern(args: dict[str, Any]) -> dict:
 
 
 @tool(
+    "worker_apply_one_job",
+    "Run preflight + apply for ONE job synchronously. This is the brain-as-conductor path: brain calls this in a loop, gets a structured outcome each time, decides what to do next based on the outcome's `status` field. No daemon required. Outcome shapes: submitted (recipe applied successfully) | handoff (recipe missing or failed → brain should drive next, browser is on the failed page) | skipped (preflight rejected: blocked, rate-limited, daily cap) | empty (queue had nothing to claim) | profile_gap (user setup incomplete) | auth_expired | error. When status='handoff', `handoff_reason` is set (no_recipe / recipe_failed) and the queue row is marked `awaiting_brain` so a future call to queue_claim_brain_fallback will pick it up — OR brain can drive immediately right now since the browser is still open. `job_id` is optional (specific row); omit to claim oldest queued.",
+    {"job_id": str, "enable_brain_fallback": bool},
+)
+async def worker_apply_one_job(args: dict[str, Any]) -> dict:
+    def _do():
+        from single_apply import apply_one_job  # deferred
+        return apply_one_job(
+            job_id=args.get("job_id") or None,
+            enable_brain_fallback=args.get("enable_brain_fallback", True),
+        )
+    return _log_and_run("worker_apply_one_job", args, _do)
+
+
+@tool(
+    "worker_run_scout_cycle",
+    "Run one scout → enqueue cycle synchronously. Honors the active "
+    "scout_set_plan if any. Returns counts so brain can decide whether "
+    "to scout again, change the plan, or move on to applying. No "
+    "daemon required.",
+    {},
+)
+async def worker_run_scout_cycle(args: dict[str, Any]) -> dict:
+    def _do():
+        from tenant import TenantConfig  # deferred
+        from worker import run_scout_cycle  # deferred
+        user_id = os.environ.get("APPLYLOOP_USER_ID", "").strip()
+        if not user_id:
+            return {"error": "APPLYLOOP_USER_ID not set"}
+        try:
+            tenant = TenantConfig.load(user_id)
+        except Exception as e:
+            return {"error": f"tenant load failed: {e}"}
+        enqueued = run_scout_cycle(tenant)
+        return {"enqueued": int(enqueued or 0)}
+    return _log_and_run("worker_run_scout_cycle", {}, _do)
+
+
+@tool(
     "queue_claim_brain_fallback",
     "Claim the next job that's been handed off for brain-driven apply. Returns the same job dict shape queue_claim_next gives you, or {empty: true} if nothing's waiting. Two sources: (a) ATSes with no hardcoded recipe (iCIMS, Taleo, Jobvite, etc.) and (b) recipe-failed jobs when WORKER_BRAIN_FALLBACK is enabled. After driving the apply, call queue_log_application + queue_update_status as usual; on success, call knowledge_record_pattern so the next apply on this ATS doesn't need to re-derive everything.",
     {},
@@ -798,6 +837,8 @@ ALL_TOOLS = [
     notify_heartbeat, notify_upload_screenshot, notify_telegram,
     # worker lifecycle
     worker_status, worker_start, worker_stop, worker_restart,
+    # brain-as-conductor (single-job + scout, no daemon required)
+    worker_apply_one_job, worker_run_scout_cycle,
     # knowledge
     knowledge_get_ats_playbook, knowledge_record_pattern,
     # brain fallback
