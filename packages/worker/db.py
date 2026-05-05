@@ -563,10 +563,25 @@ def _ensure_local_schema(conn: sqlite3.Connection):
     """)
     # Additive column migration for existing databases. SQLite is fine
     # with duplicate ADD COLUMN failing — we swallow the exception.
-    try:
-        conn.execute("ALTER TABLE applications ADD COLUMN application_profile_id TEXT")
-    except sqlite3.OperationalError:
-        pass
+    # The CREATE TABLE above is idempotent for fresh installs; these
+    # ALTERs upgrade existing databases that pre-date each column.
+    for ddl in (
+        "ALTER TABLE applications ADD COLUMN application_profile_id TEXT",
+        # `attempts` + `max_attempts` mirror the cloud `application_queue`
+        # columns (mig 027 area). Without these on the local mirror, the
+        # worker's retry counter read None → coerced to 0 → bumped to 1 →
+        # checked `1 < max_attempts(None) → False` (None comparison is
+        # falsy) → reset row to queued forever. Symptom: jobs loop at
+        # "retry 1/3" and never give up. Reported by a client on
+        # commit 84c9d5d.
+        "ALTER TABLE applications ADD COLUMN attempts INTEGER DEFAULT 0",
+        "ALTER TABLE applications ADD COLUMN max_attempts INTEGER DEFAULT 3",
+    ):
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            # Column already exists — expected on subsequent boots.
+            pass
 
 
 # ── User profile ──────────────────────────────────────────────────────────

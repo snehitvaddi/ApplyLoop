@@ -289,25 +289,58 @@ def upload_file(path: str, ref: str) -> str:
 
 
 def take_screenshot() -> Optional[str]:
+    """Capture the current page and return a local file path.
+
+    Handles three openclaw output formats observed across versions:
+      v2026.5.4+ : `MEDIA:~/.openclaw/screenshots/<name>.png` (tilde,
+                   no leading /). The MEDIA: prefix is the new
+                   openclaw markup for "this is a generated artifact".
+      legacy     : a bare absolute `/path/to/<name>.png` somewhere in
+                   stdout.
+      bare-name  : nothing parseable; openclaw drops the PNG into
+                   SCREENSHOT_DIR and prints a status only. Fall back
+                   to picking the newest *.png in that dir within the
+                   last 5 seconds.
+    """
     out = browser("screenshot --full-page --type png", timeout=10)
-    m = re.search(r'(\/\S+\.png)', out)
-    if m:
-        return m.group(1)
-    # Fall back: openclaw versions that print only a bare filename
-    # (or just "ok") still drop the PNG into the workspace screenshots
-    # dir. Pick the newest .png within the last 5 seconds — anything
-    # older is from a previous capture and shouldn't be attributed to
-    # this submit.
+
+    # New format: `MEDIA:<path>`. The path may be tilde-prefixed
+    # (`~/.openclaw/...`) or absolute. Match greedily up to whitespace.
+    m_media = re.search(r"MEDIA:(\S+\.png)", out or "", re.IGNORECASE)
+    if m_media:
+        path = os.path.expanduser(m_media.group(1))
+        if os.path.exists(path):
+            return path
+        # File doesn't exist where the prefix said — fall through to
+        # the newest-png glob below before giving up. Older openclaw
+        # builds occasionally print a stale path on retry.
+        logger.debug(f"take_screenshot: MEDIA path doesn't exist on disk: {path!r}")
+
+    # Legacy format: bare absolute /path/to/foo.png anywhere in stdout.
+    m_abs = re.search(r"(\/\S+\.png)", out or "")
+    if m_abs:
+        return m_abs.group(1)
+
+    # Newest-png fallback: openclaw versions that print only a bare
+    # filename (or just "ok") still drop the PNG into the workspace
+    # screenshots dir. Pick the newest *.png within the last 5 seconds
+    # — anything older is from a previous capture and shouldn't be
+    # attributed to this submit.
     try:
-        import glob, os, time
+        import glob
         from config import SCREENSHOT_DIR  # local import to avoid cycle
-        candidates = glob.glob(os.path.join(SCREENSHOT_DIR, "*.png"))
-        if candidates:
-            newest = max(candidates, key=os.path.getmtime)
-            if time.time() - os.path.getmtime(newest) <= 5:
-                return newest
+        # Also probe ~/.openclaw/screenshots/ — the new openclaw default.
+        for d in (SCREENSHOT_DIR, os.path.expanduser("~/.openclaw/screenshots")):
+            if not d or not os.path.isdir(d):
+                continue
+            candidates = glob.glob(os.path.join(d, "*.png"))
+            if candidates:
+                newest = max(candidates, key=os.path.getmtime)
+                if time.time() - os.path.getmtime(newest) <= 5:
+                    return newest
     except Exception:
         pass
+
     # Don't fail silently — surface what the CLI actually returned so
     # we can tell whether the screenshot capture itself broke vs. just
     # the parser. Truncate so log lines stay readable.
