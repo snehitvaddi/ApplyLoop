@@ -106,18 +106,29 @@ async def lifespan(app: FastAPI):
 
     # ── Browser gateway lifecycle ──────────────────────────────────
     # The OpenClaw browser gateway hosts a persistent Chrome session
-    # the appliers + brain drive via Playwright. Two ways it could
-    # already be running:
-    #   1. The user kept the legacy `ai.openclaw.gateway.plist`
-    #      LaunchAgent loaded — Chrome auto-starts at login (the
-    #      "empty Chrome tab popping up" experience).
-    #   2. The user ran `openclaw gateway start` manually.
-    # If neither is true, applies + scout-with-LinkedIn fail because
-    # there's no Chrome. So: at desktop boot, ensure the gateway is
-    # up. Track ownership so we only stop it on shutdown if WE
-    # started it — we won't ever kill a user's pre-existing session.
-    import os as _os, subprocess as _sp, shutil as _sh
-    _gateway_started_by_us = False
+    # the appliers + brain drive via CDP. Lifecycle contract:
+    #
+    #   - On graceful desktop shutdown, ALWAYS stop the gateway so
+    #     closing the app actually closes Chrome. Opt out by setting
+    #     APPLYLOOP_KEEP_GATEWAY=1 (rare — only for users who run
+    #     openclaw for non-ApplyLoop tools).
+    #
+    #   - On boot, sweep any orphan gateway processes from a previous
+    #     desktop session that didn't shut down cleanly (force-quit,
+    #     SIGKILL, or lifespan teardown that hung). Without this, an
+    #     orphan from session N becomes immortal across all subsequent
+    #     sessions because we used to gate the stop on "did WE start
+    #     it" — leaving zombies forever. Opt out with
+    #     APPLYLOOP_ALLOW_ORPHAN_GATEWAY=1 if some other tool legitimately
+    #     keeps openclaw alive.
+    #
+    #   - The legacy `ai.openclaw.gateway.plist` LaunchAgent (the
+    #     source of the original "empty Chrome popping up" complaint)
+    #     can re-spawn the gateway at every login if it's still loaded.
+    #     We warn loudly if its file is on disk, even if currently
+    #     unloaded — a reboot or `launchctl load` would bring it back.
+    import os as _os, subprocess as _sp, shutil as _sh, signal as _signal, atexit as _atexit
+    _gateway_started_by_us = False  # kept for telemetry; no longer gates stop
 
     def _gateway_status_running() -> bool:
         try:
@@ -129,8 +140,102 @@ async def lifespan(app: FastAPI):
         except Exception:
             return False
 
+    def _stop_openclaw_gateway() -> None:
+        """Forcibly stop the openclaw gateway. Idempotent.
+
+        Called from: lifespan cleanup, atexit, SIGTERM/SIGINT handlers.
+        Safe to call when the gateway isn't running (openclaw exits 0).
+        Respects APPLYLOOP_KEEP_GATEWAY=1 opt-out.
+        """
+        if _os.environ.get("APPLYLOOP_KEEP_GATEWAY"):
+            return
+        try:
+            _sp.run(
+                ["openclaw", "gateway", "stop"],
+                capture_output=True, timeout=10,
+            )
+        except Exception as e:
+            logger.debug(f"openclaw gateway stop error: {e}")
+        # Belt-and-suspenders: if `openclaw gateway stop` left any
+        # `openclaw gateway` processes alive (rare but seen with daemons
+        # that ignore the standard stop signal), kill them by name.
+        try:
+            r = _sp.run(
+                ["pgrep", "-f", "openclaw"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for pid_str in (r.stdout or "").split():
+                try:
+                    pid = int(pid_str.strip())
+                    if pid <= 1 or pid == _os.getpid():
+                        continue
+                    _os.kill(pid, _signal.SIGTERM)
+                except (ValueError, ProcessLookupError, PermissionError):
+                    continue
+        except Exception as e:
+            logger.debug(f"orphan sweep skipped: {e}")
+
+    # Desktop PID file — used to detect whether another desktop instance
+    # is alive (so we don't sweep its gateway). Lives next to the rest
+    # of the workspace state so a `rm -rf ~/.applyloop` resets cleanly.
+    _desktop_pid_file = _os.path.join(
+        _os.environ.get("APPLYLOOP_HOME") or _os.path.expanduser("~/.applyloop"),
+        "desktop.pid",
+    )
+
+    def _another_desktop_alive() -> bool:
+        try:
+            with open(_desktop_pid_file) as f:
+                other_pid = int((f.read() or "0").strip() or "0")
+        except (OSError, ValueError):
+            return False
+        if other_pid <= 1 or other_pid == _os.getpid():
+            return False
+        try:
+            _os.kill(other_pid, 0)  # signal 0 = liveness probe
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    # LaunchAgent footgun warning. Even if currently unloaded, the
+    # plist file will re-spawn the gateway on reboot or `launchctl
+    # load`. Tell the user so they can `rm` it if they want true
+    # "close the app, kill the browser" semantics.
+    _launch_agent_path = _os.path.expanduser(
+        "~/Library/LaunchAgents/ai.openclaw.gateway.plist"
+    )
+    if _os.path.exists(_launch_agent_path):
+        logger.warning(
+            "Found legacy LaunchAgent at %s — this can re-spawn the "
+            "OpenClaw gateway at login or on `launchctl load`. Remove "
+            "it (`rm %s`) for true 'close ApplyLoop, close Chrome' "
+            "behavior.",
+            _launch_agent_path, _launch_agent_path,
+        )
+
     if not _os.environ.get("APPLYLOOP_HEADLESS") and _sh.which("openclaw"):
+        # Boot-time orphan sweep. If a prior desktop didn't shut down
+        # cleanly, openclaw processes can survive — and the next boot
+        # used to silently inherit them as "already running" → zombie
+        # forever. Sweep them unless another desktop is alive (would
+        # be ITS gateway, leave alone) or the user opted out.
+        if (
+            not _os.environ.get("APPLYLOOP_ALLOW_ORPHAN_GATEWAY")
+            and not _another_desktop_alive()
+            and _gateway_status_running()
+        ):
+            logger.info(
+                "Found orphan openclaw gateway from a previous session — "
+                "stopping it before boot to ensure a clean Chrome session"
+            )
+            _stop_openclaw_gateway()
+            await asyncio.sleep(1)
+
+        # Now start a fresh gateway.
         if _gateway_status_running():
+            # Either another desktop is alive (we left it alone above)
+            # OR the orphan sweep was skipped via env. Either way,
+            # don't restart — it's not ours.
             logger.info("OpenClaw gateway already running — leaving alone")
         else:
             try:
@@ -152,6 +257,40 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as e:
                 logger.warning(f"OpenClaw gateway start failed: {e}")
+
+    # Write our desktop PID and arm the safety nets so the gateway is
+    # stopped even if the lifespan teardown doesn't fire (Cmd-Q, SIGKILL
+    # of uvicorn, kernel kill, exception during shutdown).
+    try:
+        _os.makedirs(_os.path.dirname(_desktop_pid_file), exist_ok=True)
+        with open(_desktop_pid_file, "w") as f:
+            f.write(str(_os.getpid()))
+    except OSError as e:
+        logger.debug(f"could not write desktop PID file: {e}")
+
+    def _on_shutdown_signal(signum, frame):
+        # Best-effort gateway stop on SIGTERM/SIGINT, then re-raise
+        # default behavior so uvicorn can complete its own teardown.
+        logger.info(f"received signal {signum} — stopping gateway")
+        _stop_openclaw_gateway()
+        try:
+            _os.unlink(_desktop_pid_file)
+        except OSError:
+            pass
+        # Don't sys.exit here — let uvicorn handle the actual exit so
+        # other resources (telegram, PTY, worker) get their teardown.
+
+    try:
+        _signal.signal(_signal.SIGTERM, _on_shutdown_signal)
+        _signal.signal(_signal.SIGINT, _on_shutdown_signal)
+    except (ValueError, OSError):
+        # Signals can't be installed in non-main threads; uvicorn
+        # workers may run lifespan in a sub-thread. Atexit below is
+        # the fallback in that case.
+        pass
+
+    _atexit.register(_stop_openclaw_gateway)
+    _atexit.register(lambda: (_os.unlink(_desktop_pid_file) if _os.path.exists(_desktop_pid_file) else None))
 
     # Auto-start the Claude Code PTY session so users don't have to
     # manually click "Start Session" on the Terminal tab every time
@@ -317,20 +456,22 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down worker...")
         await worker.stop()
 
-    # Stop the OpenClaw gateway only if WE started it. If the user has
-    # the legacy LaunchAgent loaded (or started it themselves before
-    # opening the desktop), leave it alone — they're responsible for
-    # its lifecycle. Quitting the desktop shouldn't yank Chrome out
-    # from under their other tools.
-    if _gateway_started_by_us:
-        try:
-            logger.info("Stopping OpenClaw gateway (we started it)...")
-            _sp.run(
-                ["openclaw", "gateway", "stop"],
-                capture_output=True, timeout=10,
-            )
-        except Exception as e:
-            logger.debug(f"OpenClaw gateway stop error: {e}")
+    # Always stop the OpenClaw gateway on graceful shutdown — closing
+    # the app should close Chrome. Opt out via APPLYLOOP_KEEP_GATEWAY=1
+    # for the rare user who runs openclaw for non-ApplyLoop tools.
+    # Atexit + signal handlers above also call this for hard-quit cases.
+    if _os.environ.get("APPLYLOOP_KEEP_GATEWAY"):
+        logger.info("APPLYLOOP_KEEP_GATEWAY set — leaving gateway running")
+    else:
+        logger.info("Stopping OpenClaw gateway on shutdown")
+        _stop_openclaw_gateway()
+
+    # Release the desktop PID file so the next boot's orphan sweep
+    # knows we're gone.
+    try:
+        _os.unlink(_desktop_pid_file)
+    except OSError:
+        pass
 
 
 app = FastAPI(title="ApplyLoop Desktop", lifespan=lifespan)
