@@ -1185,37 +1185,58 @@ def scout_propose_board(slug: str, ats: str, evidence: str = "") -> str:
 
 @mcp.tool()
 def scout_search_google(query: str, max_results: int = 10) -> str:
-    """Web search via DuckDuckGo HTML (no API key). Use to find ATS
-    slugs, company career pages, or verify a stale job URL.
+    """Web search via Startpage (privacy proxy that returns Google
+    results without an API key). Use to find ATS slugs, verify an apply
+    URL is alive, or surface fresh job postings via `site:` queries.
 
     Returns JSON: {query, count, results: [{title, url, snippet}, ...]}.
-    Brain decides when to call this — typically when a scout source
-    didn't find a target company, or when an apply URL went dead.
+
+    The earlier DuckDuckGo `/html/` backend started returning a JS-only
+    shell with no parseable results in 2026-Q2 — silently zero hits for
+    every query. Switched to Startpage which still server-renders.
     """
     import re as _re
     import httpx as _httpx
     q = (query or "").strip()
     if not q:
         return json.dumps({"error": "query is required"})
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     try:
-        with _httpx.Client(timeout=10.0, follow_redirects=True,
-                           headers={"User-Agent": "Mozilla/5.0 (ApplyLoop scout)"}) as c:
-            r = c.post("https://duckduckgo.com/html/", data={"q": q})
-            html = r.text
+        with _httpx.Client(timeout=15.0, follow_redirects=True,
+                           headers={"User-Agent": ua}) as c:
+            r = c.get("https://www.startpage.com/sp/search", params={"q": q})
+            html = r.text if r.status_code == 200 else ""
     except Exception as e:
         return json.dumps({"error": f"http error: {e}"})
+
+    # Each result block:
+    #   <a class="result-title result-link ..." href="<url>">
+    #     <h2 class="wgl-title ...">TITLE</h2>
+    #   </a>
+    #   <p class="description ...">SNIPPET</p>
+    block_re = _re.compile(
+        r'<a[^>]+class="result-title result-link[^"]*"[^>]+href="([^"]+)"[^>]*>'
+        r'.*?'
+        r'<h2[^>]+class="wgl-title[^"]*"[^>]*>(.*?)</h2>'
+        r'.*?</a>'
+        r'(?:.*?<p[^>]+class="description[^"]*"[^>]*>(.*?)</p>)?',
+        _re.DOTALL,
+    )
+
+    def _strip(s: str) -> str:
+        return _re.sub(r"\s+", " ",
+                       _re.sub(r"<[^>]+>", " ", s or "")).strip()
+
     results = []
-    for m in _re.finditer(
-        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
-        html, _re.DOTALL,
-    ):
-        href = m.group(1)
-        title = _re.sub(r"<[^>]+>", "", m.group(2)).strip()
-        if "uddg=" in href:
-            from urllib.parse import unquote, parse_qs, urlparse
-            qs = parse_qs(urlparse(href).query)
-            href = unquote(qs.get("uddg", [href])[0])
-        results.append({"title": title, "url": href, "snippet": ""})
+    for m in block_re.finditer(html):
+        results.append({
+            "title":   _strip(m.group(2)),
+            "url":     m.group(1),
+            "snippet": _strip(m.group(3) or ""),
+        })
         if len(results) >= max_results:
             break
     return json.dumps({"query": q, "count": len(results), "results": results})

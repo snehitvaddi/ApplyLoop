@@ -21,6 +21,7 @@ from .greenhouse import GreenhouseScout
 from .lever import LeverScout
 from .himalayas import HimalayasScout
 from .linkedin_scroll import LinkedInScrollScout
+from .google_site import GoogleSiteScout
 
 _logger = logging.getLogger(__name__)
 
@@ -32,6 +33,11 @@ REGISTERED_SOURCES: list[ScoutSource] = [
     # and blocks the apply loop. Re-enable per-tenant via CLIENT.md if needed.
     HimalayasScout(),
     LinkedInScrollScout(),
+    # GoogleSiteScout — Brian-style site-restricted search across all ATSes.
+    # Catches slugs that aren't in default_boards.py yet AND surfaces Workday
+    # / SmartRecruiters jobs we have no other path to. Lower priority than
+    # the API-driven scouts so the high-confidence ones win dedup races.
+    GoogleSiteScout(),
 ]
 
 # LinkedInPublicScout is registered conditionally. It depends on scrapling,
