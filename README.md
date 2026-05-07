@@ -102,12 +102,12 @@ Same brain, two keyboards.
 
 | Feature | What it means for you |
 |---|---|
-| **Scouts 1,200+ jobs / scan** | Greenhouse, Ashby, Lever, LinkedIn, Workday, SmartRecruiters |
+| **Scouts 1,500+ jobs / scan** | Greenhouse, Ashby, Lever, LinkedIn, Workday, SmartRecruiters + Google Site Search |
 | **Fills every form field** | AI maps your profile to any unfamiliar question format |
 | **Telegram screenshots** | Get a photo of every submitted application to your phone |
 | **Live Kanban dashboard** | Watch jobs move from queued → submitted in real time |
 | **Chat control** | Ask questions or give instructions in plain English |
-| **Auto-dedup** | Never applies to the same job twice |
+| **Auto-dedup** | Never applies to the same job twice, even across sessions |
 | **ATS support** | Greenhouse · Ashby · Lever · SmartRecruiters · Workday |
 | **Auto-updates** | Pulls latest version every night at 3 AM — no manual updates |
 | **Your data stays local** | Applications stored on your Mac in SQLite, not in the cloud |
@@ -149,9 +149,10 @@ curl -fsSL https://raw.githubusercontent.com/snehitvaddi/ApplyLoop/main/install.
 |---|---|
 | Greenhouse API | 271+ company boards |
 | Ashby API | 102+ company boards |
-| LinkedIn | 1,200+ jobs per scan |
-| Lever | ~7 active companies |
+| LinkedIn (scroll + public) | 1,200+ jobs per scan |
+| Lever | 27+ company boards |
 | Himalayas / Indeed / ZipRecruiter | Supplemental feed |
+| Google Site Search | Startpage-powered site: queries across all ATSes — surfaces Workday, SmartRecruiters, and companies not yet in board lists |
 
 ### Where it submits applications
 
@@ -161,7 +162,7 @@ curl -fsSL https://raw.githubusercontent.com/snehitvaddi/ApplyLoop/main/install.
 | Ashby | Full support |
 | Lever | Full support |
 | SmartRecruiters | Full support |
-| Workday | Partial (account creation required) |
+| Workday | Full support (account creation + email reset automated) |
 
 ---
 
@@ -188,11 +189,15 @@ Just leave the app running in the background. It will:
 
 ## Roadmap
 
-- [x] Greenhouse, Ashby, Lever, SmartRecruiters appliers
-- [x] LinkedIn scouting (Voyager API)
+- [x] Greenhouse, Ashby, Lever, SmartRecruiters, Workday appliers
+- [x] LinkedIn scouting (scroll + public Voyager API)
+- [x] Google Site Search scout (Brian-style Startpage — surfaces Workday + unknown slugs)
 - [x] Telegram integration (notifications + chat control)
-- [x] Live Kanban dashboard
+- [x] Live Kanban dashboard (reads local SQLite directly)
 - [x] CLIENT.md personal overrides (survive updates)
+- [x] Brain-as-conductor (Claude Code drives all applies via MCP tools)
+- [x] Multi-profile bundles (apply as different personas per job)
+- [x] Auto-dedup across sessions (legacy DB merge on first boot)
 - [ ] Windows installer
 - [ ] Apple code signing (no right-click needed)
 - [ ] Stripe auto-activation on payment

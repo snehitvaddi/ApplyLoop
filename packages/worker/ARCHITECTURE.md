@@ -59,17 +59,20 @@ is CRITICAL. Each layer has a specific role. DO NOT mix them up.
                      │ controls
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│  LAYER 3: CODEX / LLM (OpenClaw's Internal Engine)     │
+│  LAYER 3: MCP TOOL SERVER (Brain's hands inside Python) │
 │                                                         │
-│  What it is: OpenAI Codex (gpt-5.3-codex) or any LLM   │
+│  What it is: FastMCP server in brain/mcp_server.py      │
 │  What it does:                                          │
-│    - Powers OpenClaw's snapshot parsing                  │
-│    - Handles autonomous agent loops when Claude Code    │
-│      is not actively connected                          │
-│    - Configurable per user in openclaw.json             │
+│    - Exposes 30+ tools to the Claude Code brain:        │
+│      browser_navigate, browser_snapshot, browser_fill,  │
+│      scout_run_source, queue_claim_next, tenant_load,   │
+│      notify_telegram, and more                          │
+│    - All tool calls are made by Claude Code (Layer 1)   │
+│    - OpenClaw executes the browser side via CDP         │
+│    - Configurable via APPLYLOOP_MODE env                │
 │                                                         │
-│  Think of it as: The engine that keeps running when     │
-│  the brain (Claude Code) is sleeping.                   │
+│  Think of it as: The nervous system — translates        │
+│  Claude's intent into concrete Python + browser calls.  │
 └─────────────────────────────────────────────────────────┘
 
 ═══ HOW THEY INTERACT — EXAMPLE FLOW ═══
@@ -116,13 +119,13 @@ is CRITICAL. Each layer has a specific role. DO NOT mix them up.
 
 ═══ KEY RULES ═══
 
-- Claude Code = BRAIN (orchestrates everything)
-- OpenClaw = HANDS (executes browser commands)
-- Codex = ENGINE (always-on when Claude Code is not active)
-- For scouting: use curl/python API calls (no browser needed)
-- For applying: use openclaw browser commands (browser needed)
-- NEVER use web search for scouting — use direct API calls
-- NEVER run worker.py — Claude Code IS the worker
+- Claude Code = BRAIN (orchestrates everything via MCP tools)
+- OpenClaw = HANDS (executes browser commands via CDP)
+- MCP Server = NERVOUS SYSTEM (connects brain to Python + browser)
+- For scouting: use MCP scout tools (no browser needed)
+- For applying: use browser_* MCP tools (browser needed)
+- NEVER use web search for scouting — use scout_run_source MCP tool
+- NEVER run worker.py — Claude Code IS the worker (APPLYLOOP_MODE=brain)
 
 ═══ DATABASE — SOURCE OF TRUTH ═══
 

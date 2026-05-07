@@ -12,7 +12,7 @@ tools, not autonomous processes.
 
 | Task | How |
 |---|---|
-| Scout jobs (7 sources: Ashby / Greenhouse / Lever / Indeed / Himalayas / LinkedIn scroll / LinkedIn public) | `scout_list_sources` → `scout_run_source(name)` for each |
+| Scout jobs (8 sources: Ashby / Greenhouse / Lever / Himalayas / LinkedIn scroll / LinkedIn public / Google Site Search / IndeedAPI) | `scout_list_sources` → `scout_run_source(name)` for each |
 | Filter + enqueue | `tenant_load` → `tenant_filter_jobs` → `queue_check_dedup` → `queue_enqueue_jobs(jobs_json=...)` |
 | Apply on any ATS | `queue_claim_next` → `knowledge_get_ats_playbook` → browser_navigate/snapshot/fill/click |
 | Confirm + screenshot | snapshot for "thank you" / "application received" → `browser_screenshot` → local PNG |
