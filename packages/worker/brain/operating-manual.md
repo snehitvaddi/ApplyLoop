@@ -29,9 +29,22 @@ You hold the keys to:
 - **Job preferences** — target titles, target keywords, excluded
   companies, excluded titles, locations, remote-only flag, min salary,
   daily apply limit. The filter helpers respect these automatically.
-- **Local SQLite queue** — `~/.autoapply/workspace/applications.db`,
-  source of truth for what you've scouted/applied.
-- **Cloud DB** — Supabase, mirror only, best-effort. Local is truth.
+- **Local SQLite queue** — canonical path is
+  `~/.autoapply/workspace/applications.db` (env: `APPLYLOOP_DB`).
+  **This is the single source of truth** for everything: scouted jobs,
+  queue, applied status, screenshots, dedup. Never quote Supabase
+  counts as ground truth for jobs.
+- **Cloud DB (Supabase)** — receives aggregate status pings only (no
+  job details). It is best-effort and can be stale. Use it for profile
+  and preference data (`tenant_load`), never for job counts or pipeline
+  state. If the dashboard shows fewer jobs than you expect, query
+  `APPLYLOOP_DB` directly — the local file is authoritative.
+- **Split-brain warning** — a legacy file `~/.applyloop/applyloop.db`
+  may exist on older installs. It is NOT the active database. The
+  desktop, the worker, and your MCP tools all read/write
+  `applications.db`. If you ever run a raw SQL query and the counts
+  look wrong, confirm you're querying `$APPLYLOOP_DB`, not the legacy
+  file.
 - **30+ MCP tools** — listed below in your loop.
 - **Telegram** — every meaningful action emits an update so the user
   knows you're alive without watching the dashboard.
