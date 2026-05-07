@@ -1089,6 +1089,8 @@ SUPABASE_SERVICE_KEY=${SUPABASE_ANON_KEY_VAL}
 WORKER_ID=${WORKER_ID_VAL}
 POLL_INTERVAL=10
 APPLY_COOLDOWN=30
+APPLYLOOP_WORKSPACE=${HOME}/.autoapply/workspace
+APPLYLOOP_DB=${HOME}/.autoapply/workspace/applications.db
 RESUME_DIR=${HOME}/.autoapply/workspace/resumes
 SCREENSHOT_DIR=${HOME}/.autoapply/workspace/screenshots
 
