@@ -208,6 +208,10 @@ jobs:
           print('Windows ConPTY backend loaded successfully')
           "
 
+      - name: PTY spawn-and-read smoke test (ConPTY)
+        working-directory: packages/desktop
+        run: python -m unittest tests.test_pty_windows -v
+
       - name: Run worker tenant tests
         working-directory: packages/worker
         run: python -m unittest tests.test_tenant -v
@@ -268,6 +272,45 @@ jobs:
         run: |
           Write-Host "── dist/ contents ──"
           Get-ChildItem -Recurse -Depth 2 | Select-Object FullName, Length
+        shell: pwsh
+
+      # Launch the freshly-built .exe and confirm /api/health responds.
+      # Without this, a missing PyInstaller hidden import or DLL would
+      # only be discovered by the user on first run. Catches:
+      #   - hidden-import gaps (uvicorn protocols, httpx, fastapi deps)
+      #   - missing native DLLs (e.g. _ssl.pyd / cryptography / pywinpty)
+      #   - frozen-bootstrap corruption (PyInstaller --onedir misconfigs)
+      - name: Verify .exe launches + /api/health responds
+        working-directory: packages/desktop/dist/windows
+        env:
+          APPLYLOOP_HEADLESS: '1'
+          APPLYLOOP_PORT: '18791'
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter "ApplyLoop.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "No ApplyLoop.exe found"; exit 1 }
+          Write-Host "Launching $($exe.FullName)"
+          $proc = Start-Process -FilePath $exe.FullName -PassThru `
+            -RedirectStandardOutput "$env:TEMP\exe-stdout.txt" `
+            -RedirectStandardError  "$env:TEMP\exe-stderr.txt"
+          # PyInstaller cold-start is slower than a python launch; give it
+          # 15s before declaring failure.
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $r = Invoke-RestMethod -Uri "http://localhost:18791/api/health" -ErrorAction Stop
+              if ($r.ok) { $ok = $true; break }
+            } catch { }
+          }
+          if (-not $ok) {
+            Write-Host "── stdout ──"; Get-Content "$env:TEMP\exe-stdout.txt" -ErrorAction SilentlyContinue
+            Write-Host "── stderr ──"; Get-Content "$env:TEMP\exe-stderr.txt" -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-Error ".exe launched but /api/health never returned ok"
+            exit 1
+          }
+          Write-Host "✓ .exe responds on /api/health"
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         shell: pwsh
 
       - name: Upload Windows artifact
