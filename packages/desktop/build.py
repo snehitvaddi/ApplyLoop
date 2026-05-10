@@ -291,7 +291,7 @@ PORT = int(os.environ["APPLYLOOP_PORT"])
 
 def open_browser():
     time.sleep(2)
-    webbrowser.open(f"http://localhost:{PORT}")
+    webbrowser.open(f"http://localhost:{{PORT}}")
 
 if __name__ == "__main__":
     print()
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     print("  |  Automated Job Application Tracker   |")
     print("  +--------------------------------------+")
     print()
-    print(f"  Starting on http://localhost:{PORT}")
+    print(f"  Starting on http://localhost:{{PORT}}")
     print("  Press Ctrl+C to stop.")
     print()
 
