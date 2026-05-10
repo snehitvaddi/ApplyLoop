@@ -260,13 +260,29 @@ def build_windows_exe():
     shutil.copy2(HERE / "requirements.txt", stage)
 
     # Create the main entry script
-    # encoding="utf-8" is required: Path.write_text on Windows defaults
-    # to cp1252, which can't encode the box-drawing chars (╔╗║╚) or the
-    # em-dash. Without the explicit encoding the build crashes here.
+    # The embedded main.py is what PyInstaller wraps into ApplyLoop.exe.
+    # Two encoding-related landmines we must avoid:
+    # 1. Path.write_text defaults to cp1252 on Windows. We pass
+    #    encoding="utf-8" so the file write doesn't crash on any non-ASCII.
+    # 2. AT RUNTIME, when the frozen .exe runs with redirected stdout
+    #    (CI, services, no console), Python defaults stdout encoding to
+    #    cp1252 too, so `print(non-ASCII)` raises UnicodeEncodeError. We
+    #    reconfigure stdout/stderr to utf-8 before the first print, AND
+    #    keep the banner pure-ASCII so it works even on Python builds
+    #    that don't expose .reconfigure().
     (stage / "main.py").write_text(f"""\
 #!/usr/bin/env python3
-\"\"\"ApplyLoop Desktop — Windows entry point.\"\"\"
+\"\"\"ApplyLoop Desktop -- Windows entry point.\"\"\"
 import sys, os, webbrowser, threading, time
+
+# Force UTF-8 on stdout/stderr if the runtime supports it (3.7+).
+# Without this, a frozen .exe with redirected stdout falls back to
+# cp1252 and any non-ASCII print() crashes the whole process.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 # Ensure we can import the server package
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -278,10 +294,10 @@ def open_browser():
 
 if __name__ == "__main__":
     print()
-    print("  ╔══════════════════════════════════════╗")
-    print("  ║       {APP_NAME} Desktop               ║")
-    print("  ║  Automated Job Application Tracker   ║")
-    print("  ╚══════════════════════════════════════╝")
+    print("  +--------------------------------------+")
+    print("  |       {APP_NAME} Desktop               |")
+    print("  |  Automated Job Application Tracker   |")
+    print("  +--------------------------------------+")
     print()
     print("  Starting on http://localhost:18790")
     print("  Press Ctrl+C to stop.")
