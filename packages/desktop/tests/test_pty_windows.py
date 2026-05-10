@@ -20,9 +20,11 @@ import unittest
 @unittest.skipIf(sys.platform != "win32", "Windows-only ConPTY test")
 class WindowsPTYTest(unittest.TestCase):
     def test_spawn_echo_and_read(self) -> None:
-        # Late import — pty_windows.py raises at module-level on non-Windows.
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
-        from pty_backend import PlatformPTY  # type: ignore[import-not-found]
+        # Import via the `server` package so pty_backend's relative import
+        # `from .pty_windows import ...` resolves. Don't add server/ to
+        # sys.path directly — that breaks the relative import.
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server.pty_backend import PlatformPTY  # type: ignore[import-not-found]
 
         pty = PlatformPTY()
         pid = pty.spawn(
