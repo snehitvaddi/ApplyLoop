@@ -308,9 +308,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("APPLYLOOP_PORT", "18790")
 PORT = int(os.environ["APPLYLOOP_PORT"])
 
+def _wait_for_server(port, timeout_s=30):
+    \"\"\"Block until uvicorn has bound to localhost:port, or timeout.
+    The webview window/browser tab must NOT open until the server is
+    serving — otherwise the user sees "site can't be reached" while
+    uvicorn is still booting.\"\"\"
+    import socket as _socket
+    end = time.time() + timeout_s
+    while time.time() < end:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.settimeout(0.2)
+        try:
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return True
+        except OSError:
+            pass
+        time.sleep(0.2)
+    return False
+
 def open_browser():
-    time.sleep(2)
-    webbrowser.open(f"http://localhost:{{PORT}}")
+    if _wait_for_server(PORT):
+        webbrowser.open(f"http://localhost:{{PORT}}")
 
 def _hold_console_on_error() -> None:
     \"\"\"If the .exe was launched by a double-click (no parent console
@@ -347,49 +366,107 @@ if __name__ == "__main__":
     print("  Press Ctrl+C to stop.")
     print()
 
-    startup_succeeded = False
-    try:
-        threading.Thread(target=open_browser, daemon=True).start()
+    # Run uvicorn in a background thread so the main thread can drive a
+    # native window (pywebview / Edge WebView2). Without this, uvicorn.run()
+    # blocks forever and we never reach the GUI start. The thread is
+    # non-daemon so the process stays alive while uvicorn is serving even
+    # if the GUI fails to start (the browser fallback below joins it).
+    def _run_server():
+        try:
+            # Force PyInstaller to bundle these -- uvicorn loads via string
+            # import "server.app:app" which the static analyzer can't see.
+            import fastapi  # noqa: F401
+            import server.app  # noqa: F401
+            import uvicorn as _uvi
+            _uvi.run("server.app:app", host="127.0.0.1", port=PORT, log_level="warning")
+        except Exception as _e:
+            _tb = traceback.format_exc()
+            print("\\n[applyloop] FATAL: uvicorn thread crashed:")
+            print(_tb)
+            _write_crash(f"uvicorn thread: {{type(_e).__name__}}: {{_e}}\\n{{_tb}}")
+    _server_thread = threading.Thread(target=_run_server, name="applyloop-server", daemon=False)
+    _server_thread.start()
 
-        # Force PyInstaller to bundle these -- uvicorn loads them via string
-        # import "server.app:app" which the static analyzer can't follow.
-        # Importing them here at module top puts them in the dependency graph.
-        import fastapi  # noqa: F401
-        import server.app  # noqa: F401
-        import uvicorn
-
-        # uvicorn.run() does NOT re-raise FastAPI lifespan startup failures
-        # as Python exceptions -- it logs "Application startup failed.
-        # Exiting." and returns cleanly. Our try/except below would never
-        # fire and the console would close on us, leaving the user with no
-        # readable error and a "localhost not reachable" Chrome page.
-        # Solution: probe localhost:PORT shortly after starting, and treat
-        # uvicorn.run() returning before that probe ever succeeded as a
-        # failure that needs to be held on screen.
-        uvicorn.run("server.app:app", host="127.0.0.1", port=PORT, log_level="warning")
-        # If uvicorn.run() returned, the server has stopped. If localhost
-        # never opened, it was a startup crash -- hold the console so the
-        # user can read the error uvicorn already printed above.
-        startup_succeeded = _probe_localhost(PORT, timeout_s=0.1)
-    except KeyboardInterrupt:
-        print("\\n[applyloop] Stopped by user.")
-        sys.exit(0)
-    except Exception as exc:
-        tb = traceback.format_exc()
-        print("\\n[applyloop] FATAL ERROR during startup:")
-        print(tb)
-        _write_crash(f"{{type(exc).__name__}}: {{exc}}\\n{{tb}}")
-        _hold_console_on_error()
-        sys.exit(1)
-
-    if not startup_succeeded:
-        print()
-        print("[applyloop] uvicorn exited before the server bound to localhost.")
+    # Wait for the actual bind so neither the webview nor the browser
+    # fallback opens before the server is ready.
+    if not _probe_localhost(PORT, timeout_s=0.1):
+        # quick first check; loop with the standard helper
+        pass
+    if not _wait_for_server(PORT, timeout_s=30):
+        print("\\n[applyloop] FATAL: uvicorn never bound to localhost.")
         print("[applyloop] Scroll up for the actual error (look for 'Application")
         print("[applyloop]   startup failed' or a Python traceback).")
-        _write_crash("uvicorn exited before localhost bound -- see console above")
+        _write_crash("uvicorn never bound to localhost -- see console above")
         _hold_console_on_error()
         sys.exit(1)
+
+    # ── Try pywebview (native Windows window via Edge WebView2). On
+    # Windows 11 and Win10/1809+ with current Edge, WebView2 is
+    # preinstalled. If pywebview can't start (WebView2 runtime missing,
+    # COM init failure, etc.), fall back to the default browser.
+    _url = f"http://localhost:{{PORT}}"
+    try:
+        import webview  # pywebview
+
+        _icon_path = None
+        for _cand_dir in (getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(__file__))):
+            if not _cand_dir:
+                continue
+            _c = os.path.join(_cand_dir, "icon.ico")
+            if os.path.isfile(_c):
+                _icon_path = _c
+                break
+
+        _kwargs = {{
+            "title": "ApplyLoop",
+            "url": _url,
+            "width": 1400,
+            "height": 900,
+            "min_size": (800, 600),
+            "text_select": True,
+        }}
+        if _icon_path:
+            try:
+                import inspect
+                if "icon" in inspect.signature(webview.create_window).parameters:
+                    _kwargs["icon"] = _icon_path
+            except Exception:
+                pass
+
+        _window = webview.create_window(**_kwargs)
+
+        def _on_closed():
+            # Closing the native window means the user wants the app
+            # gone. taskkill /T /F walks the process tree so worker.py
+            # + Claude PTY + jiggler + caffeinate analogs all die.
+            try:
+                import subprocess as _subp
+                _subp.run(
+                    ["taskkill", "/F", "/T", "/PID", str(os.getpid())],
+                    capture_output=True, timeout=3,
+                )
+            except Exception:
+                pass
+            os._exit(0)
+
+        _window.events.closed += _on_closed
+        # webview.start() blocks until the window closes. pywebview picks
+        # the Edge WebView2 GUI backend on Windows automatically.
+        webview.start(debug=False, private_mode=False)
+    except Exception as _gui_err:
+        print(f"[applyloop] Native window unavailable ({{_gui_err}}). Opening browser instead.")
+        _write_crash(f"pywebview unavailable, fell back to browser: {{_gui_err}}")
+        try:
+            webbrowser.open(_url)
+        except Exception:
+            pass
+        # No GUI to block on -- wait on the server thread instead, so
+        # closing the console (or Ctrl+C) is what stops the app.
+        try:
+            _server_thread.join()
+        except KeyboardInterrupt:
+            print("\\n[applyloop] Stopped by user.")
+            sys.exit(0)
 """, encoding="utf-8")
 
     # Try PyInstaller for a proper .exe
@@ -412,6 +489,10 @@ if __name__ == "__main__":
             *icon_args,
             "--add-data", f"{stage / 'server'}{os.pathsep}server",
             "--add-data", f"{stage / 'ui'}{os.pathsep}ui",
+            # Ship icon.ico inside the bundle so pywebview can hand it to
+            # WebView2 as the window title-bar icon. Resolved at runtime
+            # via sys._MEIPASS.
+            *(["--add-data", f"{icon_path}{os.pathsep}."] if icon_path.exists() else []),
             # --collect-submodules grabs every submodule under the named
             # package even if the static analyzer can't see the import.
             # Without these, PyInstaller emits a stub that fails at runtime
@@ -421,6 +502,12 @@ if __name__ == "__main__":
             "--collect-submodules", "starlette",
             "--collect-submodules", "uvicorn",
             "--collect-submodules", "pydantic",
+            # pywebview: --collect-all picks up the data files (HTML/CSS
+            # the JS bridge needs) AND every platform backend submodule.
+            # Without --collect-all the EdgeChromium loader can't find
+            # its bundled scripts at runtime and webview.start() raises
+            # "No module named 'webview.platforms.edgechromium'".
+            "--collect-all", "webview",
             "--hidden-import", "uvicorn.logging",
             "--hidden-import", "uvicorn.protocols.http.auto",
             "--hidden-import", "uvicorn.protocols.websockets.auto",
