@@ -866,6 +866,10 @@ Write-Host "[uninstall] Removing installed code at $ApplyloopHome..."
 Remove-Item -Recurse -Force '$ApplyloopHome' -ErrorAction SilentlyContinue
 Write-Host "[uninstall] Removing .exe + shim at $LocalBinDir..."
 Remove-Item -Recurse -Force '$LocalBinDir' -ErrorAction SilentlyContinue
+Write-Host "[uninstall] Removing Start Menu + Desktop shortcuts..."
+`$startLnk   = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ApplyLoop.lnk'
+`$desktopLnk = Join-Path ([System.Environment]::GetFolderPath('Desktop')) 'ApplyLoop.lnk'
+Remove-Item `$startLnk, `$desktopLnk -Force -ErrorAction SilentlyContinue
 `$tokenFile = Join-Path `$env:USERPROFILE '.autoapply\workspace\.api-token'
 if (Test-Path `$tokenFile) {
     Write-Host "[uninstall] Removing API token..."
@@ -911,6 +915,34 @@ REM Default: launch the desktop app (start is the implicit verb)
 "@
     Set-Content -Path $ShimPath -Value $shimContent -Encoding ASCII
     Write-Log "CLI shim → $ShimPath"
+
+    # ─── Start Menu + Desktop shortcuts ─────────────────────────────────
+    # Without these, the user has to dig through %LOCALAPPDATA%\Programs to
+    # find ApplyLoop.exe — there's no Win-key-then-type-ApplyLoop. Create
+    # a .lnk so the Start menu indexes it and a desktop shortcut so first-
+    # time users see exactly the same "click an icon to launch" affordance
+    # they'd get on macOS from /Applications/ApplyLoop.app.
+    try {
+        $iconCandidate = Join-Path $ApplyloopHome "packages\desktop\icon.ico"
+        if (-not (Test-Path $iconCandidate)) {
+            $iconCandidate = $exeFullPath  # PyInstaller embeds the .exe icon
+        }
+        $startMenuDir  = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+        $startLnk      = Join-Path $startMenuDir "ApplyLoop.lnk"
+        $desktopLnk    = Join-Path ([System.Environment]::GetFolderPath("Desktop")) "ApplyLoop.lnk"
+        $wsh           = New-Object -ComObject WScript.Shell
+        foreach ($lnk in @($startLnk, $desktopLnk)) {
+            $shortcut                  = $wsh.CreateShortcut($lnk)
+            $shortcut.TargetPath       = $exeFullPath
+            $shortcut.WorkingDirectory = Split-Path $exeFullPath -Parent
+            $shortcut.IconLocation     = $iconCandidate
+            $shortcut.Description      = "ApplyLoop — automated job-application desktop app"
+            $shortcut.Save()
+        }
+        Write-Log "Start Menu + Desktop shortcuts created (search for 'ApplyLoop' from Start)"
+    } catch {
+        Write-Warn "Could not create Start Menu/Desktop shortcut: $_"
+    }
 } else {
     Write-Warn ".exe build did not produce ApplyLoop.exe at expected path; CLI shim skipped"
 }
