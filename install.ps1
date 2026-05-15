@@ -38,6 +38,21 @@ function Write-Warn   ($msg) { Write-Host "[applyloop] WARN: $msg" -ForegroundCo
 function Write-Err    ($msg) { Write-Host "[applyloop] ERROR: $msg" -ForegroundColor Red }
 function Die          ($msg) { Write-Err $msg; exit 1 }
 
+# ─── BOM-less UTF-8 file writer ─────────────────────────────────────────────
+# Windows PowerShell 5.1's `Set-Content -Encoding UTF8` writes files with a
+# 3-byte UTF-8 BOM (EF BB BF). Python reads on Windows default to cp1252,
+# which decodes those BOM bytes as 3 high-ordinal characters and then chokes
+# when the value gets passed to httpx as an HTTP header value or to json.load.
+# Use the .NET UTF8Encoding with $false (no BOM) to match Mac install.sh.
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Path,
+        [Parameter(Mandatory=$true)] [string]$Content
+    )
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
 # ─── Constants ──────────────────────────────────────────────────────────────
 $AppUrl         = if ($env:NEXT_PUBLIC_APP_URL) { $env:NEXT_PUBLIC_APP_URL } else { "https://applyloop.vercel.app" }
 $ApplyloopHome  = if ($env:APPLYLOOP_HOME) { $env:APPLYLOOP_HOME } else { Join-Path $env:USERPROFILE ".applyloop" }
@@ -185,7 +200,7 @@ if (-not (Test-Path $ocConfig)) {
   "commands": { "native": "auto", "nativeSkills": "auto" }
 }
 "@
-    Set-Content -Path $ocConfig -Value $ocJson -Encoding UTF8
+    Write-Utf8NoBom -Path $ocConfig -Content $ocJson
 }
 # Best-effort gateway setup — no launchd equivalent on Windows; openclaw
 # itself handles the start. The desktop server will spawn it on demand if
@@ -295,8 +310,8 @@ if ($ActProfileJson) {
     Write-Log "Writing profile.json"
     $actTmp = Join-Path $env:TEMP "applyloop-activate.json"
     $cfgTmp = Join-Path $env:TEMP "applyloop-cliconfig.json"
-    Set-Content -Path $actTmp -Value $ActProfileJson -Encoding UTF8
-    Set-Content -Path $cfgTmp -Value $CliConfigJson -Encoding UTF8
+    Write-Utf8NoBom -Path $actTmp -Content $ActProfileJson
+    Write-Utf8NoBom -Path $cfgTmp -Content $CliConfigJson
     $env:APPLYLOOP_HOME_FOR_PY = $ApplyloopHome
     $env:ACTIVATE_PATH = $actTmp
     $env:CLI_CONFIG_PATH = $cfgTmp
@@ -376,7 +391,7 @@ with open(os.path.join(home, "profile.json"), "w") as f:
 print(f"  wrote {len(profile['experience'])} experience, {len(profile['skills'])} skills")
 '@
     $pyScript = Join-Path $env:TEMP "applyloop-profile-transform.py"
-    Set-Content -Path $pyScript -Value $pyTransform -Encoding UTF8
+    Write-Utf8NoBom -Path $pyScript -Content $pyTransform
     & $VenvPy $pyScript
     Remove-Item $actTmp, $cfgTmp, $pyScript -ErrorAction SilentlyContinue
 }
@@ -385,7 +400,7 @@ print(f"  wrote {len(profile['experience'])} experience, {len(profile['skills'])
 $TokenFile = Join-Path $WorkspaceDir ".api-token"
 New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
 if ($WorkerToken) {
-    Set-Content -Path $TokenFile -Value $WorkerToken -Encoding UTF8 -NoNewline
+    Write-Utf8NoBom -Path $TokenFile -Content $WorkerToken
     # Owner-only ACL (Windows equivalent of chmod 600). Best-effort.
     try {
         icacls $TokenFile /inheritance:r /grant:r "$($env:USERNAME):F" 2>&1 | Out-Null
@@ -482,7 +497,7 @@ FINETUNE_RESUME_API_KEY=$FinetuneKey
 GMAIL_EMAIL=$GmailEmail
 GMAIL_APP_PASSWORD=$GmailAppPw
 "@
-Set-Content -Path $EnvFile -Value $envContent -Encoding UTF8
+Write-Utf8NoBom -Path $EnvFile -Content $envContent
 try {
     icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):F" 2>&1 | Out-Null
 } catch {}
@@ -513,7 +528,7 @@ folder.aliases.sent = "[Gmail]/Sent Mail"
 folder.aliases.drafts = "[Gmail]/Drafts"
 folder.aliases.trash = "[Gmail]/Trash"
 "@
-    Set-Content -Path $himCfg -Value $himContent -Encoding UTF8
+    Write-Utf8NoBom -Path $himCfg -Content $himContent
     try {
         icacls $himCfg /inheritance:r /grant:r "$($env:USERNAME):F" 2>&1 | Out-Null
     } catch {}
@@ -548,7 +563,7 @@ if (-not (Test-Path $ClientMd)) {
 # Lines starting with # are comments and are ignored by Claude.
 # Delete the example lines and replace with your own instructions.
 "@
-    Set-Content -Path $ClientMd -Value $clientContent -Encoding UTF8
+    Write-Utf8NoBom -Path $ClientMd -Content $clientContent
     Write-Log "Created $ClientMd"
 }
 
@@ -674,7 +689,7 @@ Check ``queue_get_pipeline`` for ``applied_today`` vs ``daily_limit``. When limi
 - ``applyloop uninstall`` — remove install + .exe + Task Scheduler entry; preserves workspace
 - ``applyloop version`` — show current commit
 "@
-Set-Content -Path $AgentsFile -Value $agentsContent -Encoding UTF8
+Write-Utf8NoBom -Path $AgentsFile -Content $agentsContent
 
 # .claude/settings.json — register MCP server
 $ClaudeDir = Join-Path $ApplyloopHome ".claude"
@@ -702,7 +717,7 @@ $claudeJson = @"
   }
 }
 "@
-Set-Content -Path $ClaudeSettings -Value $claudeJson -Encoding UTF8
+Write-Utf8NoBom -Path $ClaudeSettings -Content $claudeJson
 Write-Log "Wrote $ClaudeSettings"
 
 # ─── Phase I: Build the .exe ───────────────────────────────────────────────
@@ -818,7 +833,7 @@ try {
     Remove-Item `$LockFile -Force -ErrorAction SilentlyContinue
 }
 "@
-Set-Content -Path $UpdateScript -Value $UpdateScriptContent -Encoding UTF8
+Write-Utf8NoBom -Path $UpdateScript -Content $UpdateScriptContent
 Write-Log "Update script → $UpdateScript (fail-fast, logged to ~/.autoapply/update.log)"
 
 # Uninstaller — mirrors Mac's cmd_uninstall in packages/desktop/scripts/applyloop.
@@ -864,7 +879,7 @@ Write-Host "Optional: also uninstall global npm packages:"
 Write-Host "  npm uninstall -g openclaw"
 Write-Host "  npm uninstall -g @anthropic-ai/claude-code"
 "@
-Set-Content -Path $UninstallScript -Value $UninstallScriptContent -Encoding UTF8
+Write-Utf8NoBom -Path $UninstallScript -Content $UninstallScriptContent
 Write-Log "Uninstall script → $UninstallScript"
 
 # Shim that dispatches on first arg:

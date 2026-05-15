@@ -868,7 +868,10 @@ def _read_user_id_from_profile_json() -> str | None:
         if not path:
             continue
         try:
-            with open(path) as f:
+            # utf-8-sig strips a UTF-8 BOM if present. install.ps1's
+            # Set-Content -Encoding UTF8 writes BOM-prefixed files on
+            # Windows PowerShell 5.1, which crashes json.load otherwise.
+            with open(path, encoding="utf-8-sig") as f:
                 data = json.load(f)
             uid = (
                 data.get("user_id")

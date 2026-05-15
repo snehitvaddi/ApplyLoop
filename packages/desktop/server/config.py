@@ -76,9 +76,17 @@ APP_URL = os.environ.get(
 
 
 def load_token() -> str | None:
-    """Load the API/worker token from disk."""
+    """Load the API/worker token from disk.
+
+    Uses encoding="utf-8-sig" so we transparently strip a UTF-8 BOM if the
+    file was written by PowerShell's Set-Content (which prepends EF BB BF
+    by default). Without this strip, httpx tries to send the BOM bytes as
+    part of the X-Worker-Token header, then fails with "'ascii' codec
+    can't encode characters in position 0-2" — exactly the symptom Windows
+    clients hit on first install.
+    """
     if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
+        return TOKEN_FILE.read_text(encoding="utf-8-sig").strip()
     # Also check env
     return os.environ.get("AUTOAPPLY_TOKEN") or os.environ.get("WORKER_TOKEN")
 
@@ -104,7 +112,10 @@ def _read_user_id_from_profile() -> str | None:
         if not path:
             continue
         try:
-            with open(path) as f:
+            # utf-8-sig strips an optional BOM. install.ps1's profile.json
+            # write came out BOM-prefixed on Windows, which crashed json.load
+            # with "Expecting value: line 1 column 1" until v1.0.10.
+            with open(path, encoding="utf-8-sig") as f:
                 data = _json.load(f)
             uid = (
                 data.get("user_id")
