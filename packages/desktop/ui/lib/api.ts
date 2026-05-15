@@ -5,9 +5,23 @@
 
 const API_BASE = "/api";
 
-async function apiFetch<T = unknown>(path: string, opts?: RequestInit): Promise<T> {
+type ApiFetchInit = RequestInit & { timeoutMs?: number };
+
+// Default timeout for the lightweight status/health polls the dashboard
+// fires on a 3-second cadence. Calls that hit the cloud round-trip
+// (activation, profile sync, resume download) must pass an explicit
+// larger timeoutMs — the cloud leg can easily take 10-30s on first
+// connect (TLS handshake + Supabase RLS + Storage download). At 5s
+// those calls were aborting client-side with "signal is aborted
+// without reason" while the cloud request actually succeeded in the
+// background, which surfaced to the user as a phantom "Can't reach
+// the ApplyLoop server" error.
+const DEFAULT_TIMEOUT_MS = 5000;
+
+async function apiFetch<T = unknown>(path: string, opts?: ApiFetchInit): Promise<T> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5000)
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       headers: { "Content-Type": "application/json", ...opts?.headers },
@@ -282,6 +296,11 @@ export async function activateWithCode(code: string) {
   return apiFetch<ActivateResult>("/setup/activate", {
     method: "POST",
     body: JSON.stringify({ code }),
+    // Activation chains a cloud /api/activate + Supabase Storage resume
+    // download. Cold-connect on a fresh Windows install routinely takes
+    // 10-30s. Give it a full minute before aborting — anything less hits
+    // the AbortController before the cloud responds.
+    timeoutMs: 60_000,
   });
 }
 
