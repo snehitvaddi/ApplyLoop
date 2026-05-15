@@ -204,6 +204,38 @@ export default function AdminPage() {
     setActionLoading(null);
   }
 
+  async function deactivateUser(userId: string, email: string) {
+    const ok = window.confirm(
+      `Deactivate ${email}?\n\nThis will:\n• Reject the user (approval_status = rejected)\n• Revoke their worker token (kills their running desktop client)\n• Delete any pending activation codes\n\nReversible via "Re-approve" in the Rejected section.`
+    );
+    if (!ok) return;
+    setActionLoading(`deactivate-${userId}`);
+    try {
+      const res = await fetch("/api/admin/deactivate-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.data?.deactivated) {
+        alert(`Deactivate failed: ${data?.error?.message || res.statusText}`);
+        return;
+      }
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === userId ? { ...u, approval_status: "rejected" } : u
+        )
+      );
+      setUsersWithTokens((prev) => {
+        const next = new Set(prev);
+        next.delete(userId);
+        return next;
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function createInviteCode() {
     const res = await fetch("/api/admin/invites", {
       method: "POST",
@@ -355,11 +387,20 @@ export default function AdminPage() {
                       <button
                         onClick={() => revokeWorkerToken(u.id)}
                         disabled={actionLoading === `revoke-${u.id}`}
-                        className="px-2 py-1 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+                        className="px-2 py-1 bg-orange-600 text-white rounded text-xs font-medium hover:bg-orange-700 disabled:opacity-50"
+                        title="Revoke worker token only — user can still re-activate with a new code"
                       >
-                        Revoke
+                        {actionLoading === `revoke-${u.id}` ? "..." : "Revoke Token"}
                       </button>
                     )}
+                    <button
+                      onClick={() => deactivateUser(u.id, u.email)}
+                      disabled={actionLoading === `deactivate-${u.id}`}
+                      className="px-2 py-1 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+                      title="Full deactivation: rejects user, revokes token, deletes pending codes"
+                    >
+                      {actionLoading === `deactivate-${u.id}` ? "..." : "Deactivate"}
+                    </button>
                   </div>
                 </td>
               </tr>
