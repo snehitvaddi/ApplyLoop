@@ -191,12 +191,15 @@ export function SetupCard({ variant = "inline" }: { variant?: "standalone" | "in
       </div>
 
       {/* Download ApplyLoop.app */}
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold">Install ApplyLoop</h2>
+      <div className="flex flex-col gap-4">
+        <h2 className="text-lg font-semibold" style={{ order: 0 }}>
+          Install ApplyLoop
+        </h2>
 
-        {/* macOS */}
+        {/* macOS — order flips so the detected OS renders first */}
         <div
-          className={`border rounded-lg p-5 ${
+          style={{ order: os === "windows" ? 2 : 1 }}
+          className={`flex flex-col border rounded-lg p-5 ${
             os === "mac" ? "border-brand-500 bg-brand-50" : "border-gray-200"
           }`}
         >
@@ -276,7 +279,8 @@ export function SetupCard({ variant = "inline" }: { variant?: "standalone" | "in
 
         {/* Windows */}
         <div
-          className={`border rounded-lg p-5 ${
+          style={{ order: os === "windows" ? 1 : 2 }}
+          className={`flex flex-col border rounded-lg p-5 ${
             os === "windows" ? "border-brand-500 bg-brand-50" : "border-gray-200"
           }`}
         >
