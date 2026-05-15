@@ -821,6 +821,33 @@ try {
     Log "Stopping running ApplyLoop.exe (if any) so the next launch uses the new build..."
     Get-Process -Name "ApplyLoop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
+    # Refresh Start Menu + Desktop .lnk shortcuts. The icon comes from
+    # the .exe (embedded via PyInstaller --icon), so a rebuild changes
+    # the icon bytes but Explorer caches .lnk thumbnails — Windows can
+    # keep showing the OLD icon until the .lnk is re-saved. Re-writing
+    # the shortcuts forces a cache invalidation.
+    try {
+        `$exeRel = Get-ChildItem -Path (Join-Path `$Home 'packages\desktop\dist\windows') -Recurse -Filter "ApplyLoop.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (`$exeRel) {
+            `$icon = Join-Path `$Home 'packages\desktop\icon.ico'
+            if (-not (Test-Path `$icon)) { `$icon = `$exeRel.FullName }
+            `$startLnk   = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ApplyLoop.lnk'
+            `$desktopLnk = Join-Path ([System.Environment]::GetFolderPath('Desktop')) 'ApplyLoop.lnk'
+            `$wsh = New-Object -ComObject WScript.Shell
+            foreach (`$lnk in @(`$startLnk, `$desktopLnk)) {
+                `$sc = `$wsh.CreateShortcut(`$lnk)
+                `$sc.TargetPath       = `$exeRel.FullName
+                `$sc.WorkingDirectory = Split-Path `$exeRel.FullName -Parent
+                `$sc.IconLocation     = `$icon
+                `$sc.Description      = 'ApplyLoop -- automated job-application desktop app'
+                `$sc.Save()
+            }
+            Log "Refreshed Start Menu + Desktop shortcuts (icon source: `$icon)"
+        }
+    } catch {
+        Log "Shortcut refresh failed: `$(`$_.Exception.Message)"
+    }
+
     # ONLY stamp the version after every step above has succeeded.
     # If any threw, we exit via the catch with the version untouched.
     git -C `$Home rev-parse HEAD | Out-File -Encoding UTF8 (Join-Path `$Home '.applyloop-version')

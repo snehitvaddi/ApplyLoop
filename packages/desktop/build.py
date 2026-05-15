@@ -273,7 +273,7 @@ def build_windows_exe():
     (stage / "main.py").write_text(f"""\
 #!/usr/bin/env python3
 \"\"\"ApplyLoop Desktop -- Windows entry point.\"\"\"
-import sys, os, webbrowser, threading, time
+import sys, os, webbrowser, threading, time, traceback, datetime
 
 # Force UTF-8 on stdout/stderr if the runtime supports it (3.7+).
 # Without this, a frozen .exe with redirected stdout falls back to
@@ -284,6 +284,25 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
+# Crash log: always tee fatal errors to %USERPROFILE%\\.autoapply\\applyloop-crash.log
+# so a user who double-clicks the shortcut and sees a console flash-and-
+# vanish can at least find out WHY when they ask us for help. Without this,
+# a startup crash (port collision, BOM in token, missing dep) leaves no
+# trace because the console window dies before the user can read anything.
+_CRASH_LOG = os.path.join(
+    os.environ.get("USERPROFILE") or os.path.expanduser("~"),
+    ".autoapply", "applyloop-crash.log",
+)
+os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+
+def _write_crash(msg: str) -> None:
+    try:
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            ts = datetime.datetime.now().isoformat(timespec="seconds")
+            f.write(f"\\n[{{ts}}] {{msg}}\\n")
+    except Exception:
+        pass
+
 # Ensure we can import the server package
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("APPLYLOOP_PORT", "18790")
@@ -292,6 +311,19 @@ PORT = int(os.environ["APPLYLOOP_PORT"])
 def open_browser():
     time.sleep(2)
     webbrowser.open(f"http://localhost:{{PORT}}")
+
+def _hold_console_on_error() -> None:
+    \"\"\"If the .exe was launched by a double-click (no parent console
+    inherited from the caller), the console window we're running in
+    dies the instant Python exits. Without a pause, the user sees a
+    flash and has no way to read the traceback. The PYTHONUNBUFFERED
+    + console=True PyInstaller build means we have a real console;
+    we just need to keep it alive long enough to be read.\"\"\"
+    if sys.platform == "win32":
+        try:
+            input("\\n[applyloop] Press Enter to close this window (error details above are also at %USERPROFILE%\\\\.autoapply\\\\applyloop-crash.log)... ")
+        except Exception:
+            time.sleep(30)
 
 if __name__ == "__main__":
     print()
@@ -304,15 +336,25 @@ if __name__ == "__main__":
     print("  Press Ctrl+C to stop.")
     print()
 
-    threading.Thread(target=open_browser, daemon=True).start()
+    try:
+        threading.Thread(target=open_browser, daemon=True).start()
 
-    # Force PyInstaller to bundle these — uvicorn loads them via string
-    # import "server.app:app" which the static analyzer can't follow.
-    # Importing them here at module top puts them in the dependency graph.
-    import fastapi  # noqa: F401
-    import server.app  # noqa: F401
-    import uvicorn
-    uvicorn.run("server.app:app", host="127.0.0.1", port=PORT, log_level="warning")
+        # Force PyInstaller to bundle these -- uvicorn loads them via string
+        # import "server.app:app" which the static analyzer can't follow.
+        # Importing them here at module top puts them in the dependency graph.
+        import fastapi  # noqa: F401
+        import server.app  # noqa: F401
+        import uvicorn
+        uvicorn.run("server.app:app", host="127.0.0.1", port=PORT, log_level="warning")
+    except KeyboardInterrupt:
+        print("\\n[applyloop] Stopped by user.")
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print("\\n[applyloop] FATAL ERROR during startup:")
+        print(tb)
+        _write_crash(f"{{type(exc).__name__}}: {{exc}}\\n{{tb}}")
+        _hold_console_on_error()
+        sys.exit(1)
 """, encoding="utf-8")
 
     # Try PyInstaller for a proper .exe
