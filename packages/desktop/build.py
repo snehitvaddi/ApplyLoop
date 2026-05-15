@@ -325,6 +325,17 @@ def _hold_console_on_error() -> None:
         except Exception:
             time.sleep(30)
 
+def _probe_localhost(port: int, timeout_s: float = 0.5) -> bool:
+    import socket as _socket
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    s.settimeout(timeout_s)
+    try:
+        s.connect(("127.0.0.1", port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
 if __name__ == "__main__":
     print()
     print("  +--------------------------------------+")
@@ -336,6 +347,7 @@ if __name__ == "__main__":
     print("  Press Ctrl+C to stop.")
     print()
 
+    startup_succeeded = False
     try:
         threading.Thread(target=open_browser, daemon=True).start()
 
@@ -345,14 +357,37 @@ if __name__ == "__main__":
         import fastapi  # noqa: F401
         import server.app  # noqa: F401
         import uvicorn
+
+        # uvicorn.run() does NOT re-raise FastAPI lifespan startup failures
+        # as Python exceptions -- it logs "Application startup failed.
+        # Exiting." and returns cleanly. Our try/except below would never
+        # fire and the console would close on us, leaving the user with no
+        # readable error and a "localhost not reachable" Chrome page.
+        # Solution: probe localhost:PORT shortly after starting, and treat
+        # uvicorn.run() returning before that probe ever succeeded as a
+        # failure that needs to be held on screen.
         uvicorn.run("server.app:app", host="127.0.0.1", port=PORT, log_level="warning")
+        # If uvicorn.run() returned, the server has stopped. If localhost
+        # never opened, it was a startup crash -- hold the console so the
+        # user can read the error uvicorn already printed above.
+        startup_succeeded = _probe_localhost(PORT, timeout_s=0.1)
     except KeyboardInterrupt:
         print("\\n[applyloop] Stopped by user.")
+        sys.exit(0)
     except Exception as exc:
         tb = traceback.format_exc()
         print("\\n[applyloop] FATAL ERROR during startup:")
         print(tb)
         _write_crash(f"{{type(exc).__name__}}: {{exc}}\\n{{tb}}")
+        _hold_console_on_error()
+        sys.exit(1)
+
+    if not startup_succeeded:
+        print()
+        print("[applyloop] uvicorn exited before the server bound to localhost.")
+        print("[applyloop] Scroll up for the actual error (look for 'Application")
+        print("[applyloop]   startup failed' or a Python traceback).")
+        _write_crash("uvicorn exited before localhost bound -- see console above")
         _hold_console_on_error()
         sys.exit(1)
 """, encoding="utf-8")
