@@ -908,9 +908,43 @@ _INSTALL_COMMANDS = {
             "bash", "-c",
             "openclaw gateway install && openclaw gateway start",
         ],
+        # Windows: don't just start the gateway — repair the config file
+        # first. The "openclaw_config" preflight check funnels into this
+        # same install command, and just running `gateway start` against
+        # a stale openclaw.json (missing cdpPort, etc.) leaves the user
+        # forever-yellow even after the install succeeds. This inline
+        # PowerShell mirrors install.ps1's openclaw config-write block:
+        # preserve existing gateway token if present, write canonical
+        # JSON, then start the gateway.
         "Windows": [
-            "powershell.exe", "-NoProfile", "-Command",
-            "openclaw gateway start",
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            (
+                "$ErrorActionPreference='Continue';"
+                "$ocDir = Join-Path $env:USERPROFILE '.openclaw';"
+                "New-Item -ItemType Directory -Force -Path (Join-Path $ocDir 'workspace') | Out-Null;"
+                "New-Item -ItemType Directory -Force -Path (Join-Path $ocDir 'agents\\main\\sessions') | Out-Null;"
+                "$ocConfig = Join-Path $ocDir 'openclaw.json';"
+                "$gwToken = $null;"
+                "if (Test-Path $ocConfig) {"
+                "  try {"
+                "    $existing = Get-Content $ocConfig -Raw | ConvertFrom-Json;"
+                "    if ($existing.gateway -and $existing.gateway.auth -and $existing.gateway.auth.token) {"
+                "      $gwToken = $existing.gateway.auth.token;"
+                "    }"
+                "  } catch {}"
+                "}"
+                "if (-not $gwToken) {"
+                "  $gwToken = -join ((1..24) | ForEach-Object { '{0:x2}' -f (Get-Random -Min 0 -Max 256) });"
+                "}"
+                "$nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ');"
+                "$ocJson = '{\"meta\":{\"lastTouchedVersion\":\"2026.5.9\",\"lastTouchedAt\":\"' + $nowIso + '\"},\"wizard\":{\"lastRunAt\":\"' + $nowIso + '\",\"lastRunMode\":\"local\",\"lastRunCommand\":\"applyloop-repair\"},\"browser\":{\"defaultProfile\":\"openclaw\",\"profiles\":{\"openclaw\":{\"cdpPort\":18800,\"color\":\"#0066CC\"}}},\"gateway\":{\"port\":18789,\"mode\":\"local\",\"bind\":\"loopback\",\"auth\":{\"mode\":\"token\",\"token\":\"' + $gwToken + '\"}},\"commands\":{\"native\":\"auto\",\"nativeSkills\":\"auto\"}}';"
+                "[System.IO.File]::WriteAllText($ocConfig, $ocJson, (New-Object System.Text.UTF8Encoding $false));"
+                "Write-Host '[repair] openclaw.json written with cdpPort=18800, gateway.port=18789';"
+                "openclaw gateway start;"
+                "Start-Sleep -Seconds 2;"
+                "$probe = Test-NetConnection -ComputerName 127.0.0.1 -Port 18789 -InformationLevel Quiet -WarningAction SilentlyContinue;"
+                "if ($probe) { Write-Host '[repair] gateway is listening on 127.0.0.1:18789' } else { Write-Host '[repair] gateway probe failed — retrying with explicit config'; Start-Process -FilePath openclaw -ArgumentList @('gateway','start','--config',$ocConfig) -NoNewWindow -WindowStyle Hidden | Out-Null }"
+            ),
         ],
     },
     "git": {

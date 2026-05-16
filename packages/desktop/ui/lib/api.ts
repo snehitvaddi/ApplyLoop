@@ -215,7 +215,7 @@ export interface InstallProgress {
 }
 
 export async function installTool(
-  tool: "claude" | "openclaw" | "git" | "brew"
+  tool: "claude" | "openclaw" | "git" | "brew" | "openclaw_gateway"
 ) {
   return apiFetch<{
     ok: boolean;

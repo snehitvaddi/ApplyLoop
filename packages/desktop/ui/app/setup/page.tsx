@@ -217,7 +217,7 @@ export default function SetupPage() {
 
   // ── Install flow ──────────────────────────────────────────────────
 
-  const startInstall = useCallback(async (tool: "claude" | "openclaw" | "git" | "brew") => {
+  const startInstall = useCallback(async (tool: "claude" | "openclaw" | "git" | "brew" | "openclaw_gateway") => {
     setInstalling((prev) => ({
       ...prev,
       [tool]: { ok: true, running: true, exit_code: null, last_lines: [], started: true },
@@ -685,7 +685,7 @@ function handleFix(
   check: PreflightCheck,
   handlers: {
     goToSettings: (tab: string) => void
-    startInstall: (tool: "claude" | "openclaw" | "git" | "brew") => void
+    startInstall: (tool: "claude" | "openclaw" | "git" | "brew" | "openclaw_gateway") => void
   }
 ) {
   const r = check.remediation
@@ -701,14 +701,29 @@ function handleFix(
       window.location.href = r.target
     }
   } else if (r.type === "install") {
-    // Map check id → install tool name (they differ: claude_cli → claude)
-    const toolMap: Record<string, "claude" | "openclaw" | "git" | "brew"> = {
+    // Map check id → install tool name (they differ: claude_cli → claude).
+    // openclaw_{config,gateway,browser} all funnel into the openclaw_gateway
+    // backend command which now writes the canonical openclaw.json AND
+    // starts the gateway in one go. Prior to this map, clicking Install
+    // on any of those three rows silently no-op'd because toolMap[id]
+    // returned undefined — the button looked broken / unclickable.
+    const toolMap: Record<string, "claude" | "openclaw" | "git" | "brew" | "openclaw_gateway"> = {
       claude_cli: "claude",
       openclaw_cli: "openclaw",
       git: "git",
+      openclaw_config: "openclaw_gateway",
+      openclaw_gateway: "openclaw_gateway",
+      openclaw_browser: "openclaw_gateway",
     }
     const tool = toolMap[check.id]
-    if (tool) handlers.startInstall(tool)
+    if (tool) {
+      handlers.startInstall(tool)
+    } else {
+      // Defensive: if a check.id ships without a tool mapping, tell the
+      // user instead of silently doing nothing.
+      console.warn(`handleFix: no install tool mapped for check.id=${check.id}`)
+      alert(`No installer registered for "${check.id}". Run the install one-liner from PowerShell to repair.`)
+    }
   } else if (r.type === "link") {
     // Open in default browser via window.open
     window.open(r.target, "_blank", "noopener,noreferrer")
