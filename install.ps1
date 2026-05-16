@@ -304,16 +304,33 @@ if ($openclawInstalled) {
     npm install -g openclaw --no-fund --no-audit 2>&1 | Out-Null
 }
 
-# Write minimal openclaw config — same as install.sh
+# Write/repair openclaw config. Previously this only wrote when the file
+# was MISSING — so an older install's openclaw.json (missing newer fields
+# like browser.profiles.openclaw.cdpPort) would be left in place forever
+# and the desktop preflight would forever flag "Config incomplete." Now
+# we always merge the required fields into whatever exists, preserving
+# the gateway token if one was already generated (re-rolling it would
+# break any prior session that's still alive).
 $ocDir = Join-Path $env:USERPROFILE ".openclaw"
 $ocConfig = Join-Path $ocDir "openclaw.json"
 New-Item -ItemType Directory -Force -Path (Join-Path $ocDir "workspace") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $ocDir "agents\main\sessions") | Out-Null
-if (-not (Test-Path $ocConfig)) {
-    Write-Log "Writing $ocConfig"
-    $gwToken = -join ((1..24) | ForEach-Object { '{0:x2}' -f (Get-Random -Min 0 -Max 256) })
-    $nowIso = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $ocJson = @"
+
+$existingGwToken = $null
+if (Test-Path $ocConfig) {
+    try {
+        $existing = Get-Content $ocConfig -Raw | ConvertFrom-Json
+        if ($existing.gateway -and $existing.gateway.auth -and $existing.gateway.auth.token) {
+            $existingGwToken = $existing.gateway.auth.token
+            Write-Log "Reusing existing openclaw gateway token"
+        }
+    } catch {
+        Write-Warn "Existing openclaw.json was unparseable — regenerating from scratch"
+    }
+}
+$gwToken = if ($existingGwToken) { $existingGwToken } else { -join ((1..24) | ForEach-Object { '{0:x2}' -f (Get-Random -Min 0 -Max 256) }) }
+$nowIso = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$ocJson = @"
 {
   "meta": { "lastTouchedVersion": "2026.5.9", "lastTouchedAt": "$nowIso" },
   "wizard": { "lastRunAt": "$nowIso", "lastRunMode": "local", "lastRunCommand": "applyloop-install" },
@@ -328,12 +345,35 @@ if (-not (Test-Path $ocConfig)) {
   "commands": { "native": "auto", "nativeSkills": "auto" }
 }
 "@
-    Write-Utf8NoBom -Path $ocConfig -Content $ocJson
-}
-# Best-effort gateway setup — no launchd equivalent on Windows; openclaw
-# itself handles the start. The desktop server will spawn it on demand if
-# this fails.
+Write-Log "Writing $ocConfig (force-rewrite to include required fields)"
+Write-Utf8NoBom -Path $ocConfig -Content $ocJson
+
+# Start the gateway and verify it actually bound. Without the verify step
+# we used to silently skip on errors and leave the user with a "gateway
+# status check timed out" warning row in the desktop preflight.
+Write-Log "Starting openclaw gateway..."
 & openclaw gateway start 2>&1 | Out-Null
+Start-Sleep -Seconds 2
+# Probe — the gateway listens on the port we just wrote.
+$gwUp = $false
+try {
+    $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port 18789 -InformationLevel Quiet -WarningAction SilentlyContinue
+    if ($probe) { $gwUp = $true }
+} catch {}
+if ($gwUp) {
+    Write-Log "OpenClaw gateway is listening on 127.0.0.1:18789"
+} else {
+    Write-Warn "OpenClaw gateway didn't come up via 'openclaw gateway start'. Retrying with explicit config path..."
+    Start-Process -FilePath "openclaw" -ArgumentList @("gateway", "start", "--config", $ocConfig) -NoNewWindow -WindowStyle Hidden | Out-Null
+    Start-Sleep -Seconds 3
+    try {
+        $probe2 = Test-NetConnection -ComputerName 127.0.0.1 -Port 18789 -InformationLevel Quiet -WarningAction SilentlyContinue
+        if ($probe2) { Write-Log "OpenClaw gateway is now up after retry" }
+        else { Write-Warn "OpenClaw gateway still not responding. The desktop will retry on demand; if it persists, click 'Install' on the OpenClaw gateway row in the setup checklist." }
+    } catch {
+        Write-Warn "OpenClaw gateway probe failed: $_"
+    }
+}
 
 # ─── Phase C: Clone / update repo ───────────────────────────────────────────
 $parentDir = Split-Path $ApplyloopHome -Parent
