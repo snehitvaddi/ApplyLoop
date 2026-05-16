@@ -405,8 +405,10 @@ if __name__ == "__main__":
     # preinstalled. If pywebview can't start (WebView2 runtime missing,
     # COM init failure, etc.), fall back to the default browser.
     _url = f"http://localhost:{{PORT}}"
+    print("[applyloop] Attempting native window via pywebview/WebView2...")
     try:
         import webview  # pywebview
+        print(f"[applyloop] pywebview imported (version={{getattr(webview, '__version__', 'unknown')}})")
 
         _icon_path = None
         for _cand_dir in (getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(__file__))):
@@ -452,10 +454,18 @@ if __name__ == "__main__":
         _window.events.closed += _on_closed
         # webview.start() blocks until the window closes. pywebview picks
         # the Edge WebView2 GUI backend on Windows automatically.
+        print("[applyloop] Starting GUI loop (window should open now)")
         webview.start(debug=False, private_mode=False)
     except Exception as _gui_err:
-        print(f"[applyloop] Native window unavailable ({{_gui_err}}). Opening browser instead.")
-        _write_crash(f"pywebview unavailable, fell back to browser: {{_gui_err}}")
+        # Loud + persisted so we can actually diagnose. The previous bug
+        # report ("just opened Chrome instead of native window") only said
+        # the fallback fired — not WHY. _write_crash + console print
+        # together let us see the cause either way.
+        _gui_tb = traceback.format_exc()
+        print(f"[applyloop] Native window unavailable: {{_gui_err}}")
+        print(f"[applyloop] Full traceback:\\n{{_gui_tb}}")
+        print(f"[applyloop] Opening browser fallback instead.")
+        _write_crash(f"pywebview unavailable, fell back to browser: {{_gui_err}}\\n{{_gui_tb}}")
         try:
             webbrowser.open(_url)
         except Exception:
@@ -508,6 +518,27 @@ if __name__ == "__main__":
             # its bundled scripts at runtime and webview.start() raises
             # "No module named 'webview.platforms.edgechromium'".
             "--collect-all", "webview",
+            # Transitive deps PyInstaller frequently misses for the Windows
+            # WebView2 backend. Each one of these has been the *single*
+            # missing piece in past pywebview-on-Windows bug reports:
+            #   - proxy_tools  → @serve_static decorator pywebview uses
+            #   - bottle       → embedded HTTP shim for html=... windows
+            #   - clr_loader / pythonnet → CLR bridge the older mshtml
+            #     fallback needs (kept for graceful degradation on
+            #     machines without WebView2 runtime)
+            #   - typing_extensions → backport pywebview imports for 3.10
+            "--collect-all", "proxy_tools",
+            "--collect-all", "bottle",
+            "--hidden-import", "clr_loader",
+            "--hidden-import", "pythonnet",
+            "--hidden-import", "typing_extensions",
+            # Force the EdgeChromium backend module into the bundle
+            # explicitly. --collect-all webview SHOULD grab this, but
+            # at least one user-reported PyInstaller version dropped it
+            # silently. Belt-and-suspenders.
+            "--hidden-import", "webview.platforms.edgechromium",
+            "--hidden-import", "webview.platforms.winforms",
+            "--hidden-import", "webview.platforms.mshtml",
             "--hidden-import", "uvicorn.logging",
             "--hidden-import", "uvicorn.protocols.http.auto",
             "--hidden-import", "uvicorn.protocols.websockets.auto",
