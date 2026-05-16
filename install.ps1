@@ -216,6 +216,32 @@ if ($env:APPLYLOOP_SKIP_ACTIVATION) {
     Write-Log "Code verified for $who (user $ActUserId)"
 }
 
+# ─── Pre-flight: kill any running ApplyLoop process ──────────────────────────
+# Without this, a previous install's .exe sits on port 18790 with a file
+# lock on its own binary. The new build would write a fresh .exe to disk
+# but the OS keeps serving the old one; user thinks "I reinstalled" but
+# /api/health still returns the old payload. Reproduced on Shreya's box:
+# curl /api/health came back without git_sha (field added in a0dae52)
+# even after a fresh install — old .exe was still bound to the port.
+try {
+    $running = Get-Process -Name "ApplyLoop" -ErrorAction SilentlyContinue
+    if ($running) {
+        Write-Log "Stopping $($running.Count) running ApplyLoop process(es) so install can replace the .exe"
+        $running | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+    # Also kill anything still bound to the port — covers an orphaned
+    # uvicorn that detached from its parent.
+    $portProc = Get-NetTCPConnection -LocalPort 18790 -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty OwningProcess
+    if ($portProc) {
+        Stop-Process -Id $portProc -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+} catch {
+    Write-Warn "Could not clean up running processes: $_"
+}
+
 # ─── Phase B: Dependency bootstrap (winget) ─────────────────────────────────
 function Test-Cmd($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
