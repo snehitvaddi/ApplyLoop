@@ -329,7 +329,14 @@ def _wait_for_server(port, timeout_s=30):
 
 def open_browser():
     if _wait_for_server(PORT):
-        webbrowser.open(f"http://localhost:{{PORT}}")
+        # Use 127.0.0.1 explicitly. On Windows 10/11, `localhost`
+        # resolves to ::1 (IPv6) before 127.0.0.1 (IPv4). uvicorn
+        # binds IPv4 only — so the user's browser tab opened on
+        # `localhost` would try ::1 first, get connection-refused,
+        # and either fall back to IPv4 (slow) or fail outright
+        # depending on the browser. 127.0.0.1 sidesteps the dual-
+        # stack guess.
+        webbrowser.open(f"http://127.0.0.1:{{PORT}}")
 
 def _hold_console_on_error() -> None:
     \"\"\"If the .exe was launched by a double-click (no parent console
@@ -362,7 +369,7 @@ if __name__ == "__main__":
     print("  |  Automated Job Application Tracker   |")
     print("  +--------------------------------------+")
     print()
-    print(f"  Starting on http://localhost:{{PORT}}")
+    print(f"  Starting on http://127.0.0.1:{{PORT}}")
     print("  Press Ctrl+C to stop.")
     print()
 
@@ -404,7 +411,7 @@ if __name__ == "__main__":
     # Windows 11 and Win10/1809+ with current Edge, WebView2 is
     # preinstalled. If pywebview can't start (WebView2 runtime missing,
     # COM init failure, etc.), fall back to the default browser.
-    _url = f"http://localhost:{{PORT}}"
+    _url = f"http://127.0.0.1:{{PORT}}"  # IPv4 explicit; avoids localhost→::1 trap on Windows
     print("[applyloop] Attempting native window via pywebview/WebView2...")
     try:
         import webview  # pywebview
