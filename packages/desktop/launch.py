@@ -52,16 +52,29 @@ WORKSPACE_DIR = _resolve_workspace()
 
 
 def _install_headless_logging() -> Path | None:
-    """When HEADLESS=1, tee the root logger to $WORKSPACE/server.log so CI
-    runs can collect the file as an artifact even after the process exits.
+    """Tee the root logger to a file so failures leave a trail.
+
+    HEADLESS=1 (CI) → $WORKSPACE/server.log, kept for the artifact uploader.
+    Otherwise (normal .app launch) → ~/.autoapply/desktop.log, which is what
+    `applyloop logs` tails and what `applyloop start` shows the user when
+    the server fails to come up.
+
+    Before this, the desktop path only logged to the macOS unified log
+    (visible via `log show`), so a Mac user reporting "the app won't open
+    and localhost is refused" had nothing to send back — Console.app
+    filtering on the unhelpful "Python" process name is not a thing most
+    users will do. With a known file path the diagnostic loop is one
+    command: `tail ~/.autoapply/desktop.log`.
 
     Returns the log path on success, None otherwise.
     """
-    if not HEADLESS:
-        return None
     try:
-        WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = WORKSPACE_DIR / "server.log"
+        if HEADLESS:
+            WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+            log_path = WORKSPACE_DIR / "server.log"
+        else:
+            log_path = Path.home() / ".autoapply" / "desktop.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
         handler.setFormatter(
             logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")

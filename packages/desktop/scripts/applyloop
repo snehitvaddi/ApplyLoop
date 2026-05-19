@@ -27,8 +27,85 @@ cmd_start() {
     echo "ApplyLoop.app not found at $APPLYLOOP_APP — run the curl installer first." >&2
     exit 1
   fi
+
+  # Self-heal stale state that silently breaks startup. Users hit this
+  # mostly after kernel-level kills (force quit, OOM, system restart
+  # mid-shutdown) — the .app's atexit hooks don't fire and the next
+  # `open` either bails because lifespan thinks another desktop is
+  # alive, or the new uvicorn fails to bind because a zombie holds the
+  # port. Both are invisible to the user ("site can't be reached" /
+  # "nothing happened").
+
+  # 1. Stale desktop.pid — lifespan reads this and may decide not to
+  # sweep the gateway, leaving Chrome in a broken state. Remove if PID
+  # is dead.
+  local pid_file="$APPLYLOOP_HOME/desktop.pid"
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || echo)"
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      log "Removing stale desktop.pid ($pid is dead)"
+      rm -f "$pid_file"
+    fi
+  fi
+
+  # 2. Port hijack — anything bound to 18790 that isn't an ApplyLoop
+  # process needs to clear out, otherwise uvicorn errors out on bind
+  # and the .app exits silently. lsof -nP -iTCP:18790 -sTCP:LISTEN.
+  local listener_pid
+  listener_pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [[ -n "$listener_pid" ]]; then
+    local listener_cmd
+    listener_cmd="$(ps -o comm= -p "$listener_pid" 2>/dev/null || true)"
+    # Conservative: only kill if it's clearly a stale ApplyLoop. The
+    # launcher process is `Python` and `python3.x`; the .app's own
+    # name doesn't show up because we exec the venv python directly.
+    # Match the launch.py path in the args list instead.
+    if ps -p "$listener_pid" -o command= 2>/dev/null | grep -q "packages/desktop/launch.py"; then
+      log "Killing stale ApplyLoop python on port $PORT (pid $listener_pid)"
+      kill "$listener_pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$listener_pid" 2>/dev/null && kill -9 "$listener_pid" 2>/dev/null || true
+    else
+      echo "Port $PORT is held by another process (pid $listener_pid, $listener_cmd)." >&2
+      echo "Free it first, then run 'applyloop start' again." >&2
+      exit 1
+    fi
+  fi
+
+  # 3. macOS quarantine — re-installs from a curl pipe sometimes land
+  # with com.apple.quarantine set, which makes Gatekeeper silently
+  # refuse to exec the bash launcher. The .app appears in Dock for a
+  # heartbeat and vanishes. Strip the xattr; it's a no-op when absent.
+  xattr -dr com.apple.quarantine "$APPLYLOOP_APP" 2>/dev/null || true
+
   log "Opening $APPLYLOOP_APP"
   open "$APPLYLOOP_APP"
+
+  # Verify the server actually came up. If it didn't, the user
+  # otherwise sees nothing — no window, no error, just a dead Dock
+  # icon. Poll /api/health for up to 60s (cold start includes openclaw
+  # gateway probe and the LLM API key load), then dump the tail of
+  # the log so the failure mode is visible at the same prompt the
+  # user ran `applyloop start` from.
+  local deadline=$(($(date +%s) + 60))
+  while (( $(date +%s) < deadline )); do
+    if curl -sS --max-time 2 "http://localhost:$PORT/api/health" >/dev/null 2>&1; then
+      log "Server is up at http://localhost:$PORT"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo
+  echo "[applyloop] Server did not come up within 60s." >&2
+  echo "[applyloop] Last 30 lines of $LOG:" >&2
+  if [[ -f "$LOG" ]]; then
+    tail -30 "$LOG" >&2
+  else
+    echo "  (no log file at $LOG — launcher may not have run)" >&2
+  fi
+  exit 1
 }
 
 cmd_stop() {
